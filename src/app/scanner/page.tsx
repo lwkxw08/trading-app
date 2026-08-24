@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import OpportunityCard from "@/components/OpportunityCard";
+import { apiUrl } from "@/components/api";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import type { Opportunity } from "@/lib/strategies/types";
 
@@ -18,7 +19,7 @@ export default function Scanner() {
     setLoading(true);
     const params = new URLSearchParams({ tf });
     if (symbols.trim()) params.set("symbols", symbols.trim());
-    fetch(`/api/scan?${params}`)
+    fetch(apiUrl(`/api/scan?${params}`))
       .then((r) => r.json())
       .then((d) => {
         setOpportunities(d.opportunities ?? []);

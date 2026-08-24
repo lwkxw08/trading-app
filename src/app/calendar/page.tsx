@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { apiUrl } from "@/components/api";
 import { fmtTime } from "@/components/format";
 import type { EconomicEvent, EventImpact } from "@/lib/calendar/types";
 
@@ -10,7 +11,7 @@ export default function CalendarPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/calendar")
+    fetch(apiUrl("/api/calendar"))
       .then((r) => r.json())
       .then((d) => setEvents(d.events ?? []))
       .catch(() => {})

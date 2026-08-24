@@ -3,6 +3,7 @@
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import OpportunityCard from "@/components/OpportunityCard";
+import { apiUrl } from "@/components/api";
 import PriceChart, { type LevelLine } from "@/components/PriceChart";
 import TradePlanBuilder from "@/components/TradePlanBuilder";
 import { fmtPrice } from "@/components/format";
@@ -30,14 +31,14 @@ export default function AnalyzeSymbol() {
     setError(null);
     setAi(null);
     setSelectedOpp(null);
-    fetch(`/api/klines?symbol=${symbol}&tf=${tf}`)
+    fetch(apiUrl(`/api/klines?symbol=${symbol}&tf=${tf}`))
       .then(async (r) => {
         const d = await r.json();
         if (!r.ok) throw new Error(d.error ?? "failed to load candles");
         setCandles(d.candles);
       })
       .catch((e) => setError(e.message));
-    fetch(`/api/analysis?symbol=${symbol}&tf=${tf}`)
+    fetch(apiUrl(`/api/analysis?symbol=${symbol}&tf=${tf}`))
       .then(async (r) => {
         const d = await r.json();
         if (!r.ok) throw new Error(d.error ?? "analysis failed");
@@ -51,7 +52,7 @@ export default function AnalyzeSymbol() {
   const runAi = useCallback(() => {
     setAiLoading(true);
     setAiError(null);
-    fetch("/api/ai/analyze", {
+    fetch(apiUrl("/api/ai/analyze"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ symbol, tf }),

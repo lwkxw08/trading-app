@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { apiUrl } from "@/components/api";
 import { PINE_TEMPLATES, type PineStrategyKind } from "@/lib/pine/templates";
 
 export default function IndicatorStudio() {
@@ -22,7 +23,7 @@ export default function IndicatorStudio() {
   const generate = useCallback(() => {
     setLoading(true);
     setError(null);
-    fetch("/api/pine", {
+    fetch(apiUrl("/api/pine"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

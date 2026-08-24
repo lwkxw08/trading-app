@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import OpportunityCard from "@/components/OpportunityCard";
+import { apiUrl } from "@/components/api";
 import { fmtCompact, fmtPct, fmtPrice, fmtTime } from "@/components/format";
 import type { DailyBriefing } from "@/lib/ai/analyze";
 import type { EconomicEvent } from "@/lib/calendar/types";
@@ -19,16 +20,16 @@ export default function CommandCenter() {
   const [scanLoading, setScanLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/tickers")
+    fetch(apiUrl("/api/tickers"))
       .then((r) => r.json())
       .then((d) => setTickers(d.tickers ?? []))
       .catch(() => {});
-    fetch("/api/scan?tf=4h")
+    fetch(apiUrl("/api/scan?tf=4h"))
       .then((r) => r.json())
       .then((d) => setOpportunities(d.opportunities ?? []))
       .catch(() => {})
       .finally(() => setScanLoading(false));
-    fetch("/api/calendar")
+    fetch(apiUrl("/api/calendar"))
       .then((r) => r.json())
       .then((d) => {
         const now = Date.now() / 1000;
@@ -44,7 +45,7 @@ export default function CommandCenter() {
   const loadBriefing = useCallback(() => {
     setBriefingLoading(true);
     setBriefingError(null);
-    fetch("/api/ai/briefing")
+    fetch(apiUrl("/api/ai/briefing"))
       .then(async (r) => {
         const d = await r.json();
         if (!r.ok) throw new Error(d.error ?? "briefing failed");
