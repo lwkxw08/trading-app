@@ -1,0 +1,123 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import type { Candle, Ticker, Timeframe } from "@/lib/market/types";
+
+// data-stream.binance.vision mirrors the market-data streams for regions
+// where stream.binance.com is geo-restricted.
+const WS_HOSTS = ["wss://stream.binance.com:9443", "wss://data-stream.binance.vision"];
+
+interface MiniTickerMsg {
+  s: string; // symbol
+  c: string; // close
+  o: string; // open 24h ago
+  q: string; // quote volume 24h
+}
+
+interface KlineMsg {
+  k: {
+    t: number; // open time ms
+    o: string;
+    h: string;
+    l: string;
+    c: string;
+    v: string;
+  };
+}
+
+function connect(streams: string[], onMessage: (data: unknown) => void): () => void {
+  let ws: WebSocket | null = null;
+  let hostIdx = 0;
+  let closed = false;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const open = () => {
+    if (closed || streams.length === 0) return;
+    ws = new WebSocket(`${WS_HOSTS[hostIdx % WS_HOSTS.length]}/stream?streams=${streams.join("/")}`);
+    ws.onmessage = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.data as string);
+        onMessage(parsed.data ?? parsed);
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    ws.onclose = () => {
+      if (closed) return;
+      hostIdx += 1;
+      retryTimer = setTimeout(open, 2000);
+    };
+    ws.onerror = () => ws?.close();
+  };
+  open();
+
+  return () => {
+    closed = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    ws?.close();
+  };
+}
+
+/** Streams 24h mini-ticker updates for the given symbols; returns a symbol → Ticker map. */
+export function useLiveTickers(symbols: string[]): Record<string, Ticker> {
+  const [tickers, setTickers] = useState<Record<string, Ticker>>({});
+  const key = symbols.join(",");
+  const pendingRef = useRef<Record<string, Ticker>>({});
+
+  useEffect(() => {
+    if (symbols.length === 0) return;
+    const streams = symbols.map((s) => `${s.toLowerCase()}@miniTicker`);
+    // Batch updates on a short interval so rapid frames don't thrash renders.
+    const flush = setInterval(() => {
+      const pending = pendingRef.current;
+      if (Object.keys(pending).length === 0) return;
+      pendingRef.current = {};
+      setTickers((prev) => ({ ...prev, ...pending }));
+    }, 1000);
+
+    const close = connect(streams, (data) => {
+      const t = data as MiniTickerMsg;
+      if (!t.s || !t.c) return;
+      const close_ = parseFloat(t.c);
+      const open_ = parseFloat(t.o);
+      pendingRef.current[t.s] = {
+        symbol: t.s,
+        lastPrice: close_,
+        change24hPct: open_ > 0 ? ((close_ - open_) / open_) * 100 : 0,
+        volume24h: parseFloat(t.q),
+      };
+    });
+    return () => {
+      clearInterval(flush);
+      close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  return tickers;
+}
+
+/** Streams live kline updates for one symbol/timeframe; returns the latest in-progress candle. */
+export function useLiveKline(symbol: string, tf: Timeframe): Candle | null {
+  const [candle, setCandle] = useState<Candle | null>(null);
+
+  useEffect(() => {
+    setCandle(null);
+    if (!symbol) return;
+    const close = connect([`${symbol.toLowerCase()}@kline_${tf}`], (data) => {
+      const m = data as KlineMsg;
+      if (!m.k) return;
+      setCandle({
+        time: Math.floor(m.k.t / 1000),
+        open: parseFloat(m.k.o),
+        high: parseFloat(m.k.h),
+        low: parseFloat(m.k.l),
+        close: parseFloat(m.k.c),
+        volume: parseFloat(m.k.v),
+      });
+    });
+    return close;
+  }, [symbol, tf]);
+
+  return candle;
+}

@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
+import FavoritesHeatmap from "@/components/FavoritesHeatmap";
 import OpportunityCard from "@/components/OpportunityCard";
 import { apiUrl } from "@/components/api";
 import { fmtCompact, fmtPct, fmtPrice, fmtTime } from "@/components/format";
+import { useLiveTickers } from "@/components/useLiveMarket";
 import type { DailyBriefing } from "@/lib/ai/analyze";
 import type { EconomicEvent } from "@/lib/calendar/types";
 import { TIMEFRAMES, type Ticker, type Timeframe } from "@/lib/market/types";
@@ -19,6 +21,7 @@ export default function CommandCenter() {
   const [briefingLoading, setBriefingLoading] = useState(false);
   const [scanLoading, setScanLoading] = useState(true);
   const [tf, setTf] = useState<Timeframe>("4h");
+  const live = useLiveTickers(tickers.map((t) => t.symbol));
 
   useEffect(() => {
     fetch(apiUrl("/api/tickers"))
@@ -64,20 +67,25 @@ export default function CommandCenter() {
     <div className="space-y-6">
       {/* Ticker strip */}
       <div className="flex gap-3 overflow-x-auto pb-1">
-        {tickers.map((t) => (
-          <Link
-            key={t.symbol}
-            href={`/analyze/${t.symbol}`}
-            className="min-w-36 shrink-0 rounded-lg border border-edge bg-surface px-3 py-2 hover:border-accent"
-          >
-            <div className="text-xs font-semibold">{t.symbol}</div>
-            <div className="font-mono text-sm">{fmtPrice(t.lastPrice)}</div>
-            <div className={`text-xs ${t.change24hPct >= 0 ? "text-bull" : "text-bear"}`}>
-              {fmtPct(t.change24hPct)} · {fmtCompact(t.volume24h)}
-            </div>
-          </Link>
-        ))}
+        {tickers.map((base) => {
+          const t = live[base.symbol] ?? base;
+          return (
+            <Link
+              key={t.symbol}
+              href={`/analyze/${t.symbol}`}
+              className="min-w-36 shrink-0 rounded-lg border border-edge bg-surface px-3 py-2 hover:border-accent"
+            >
+              <div className="text-xs font-semibold">{t.symbol}</div>
+              <div className="font-mono text-sm">{fmtPrice(t.lastPrice)}</div>
+              <div className={`text-xs ${t.change24hPct >= 0 ? "text-bull" : "text-bear"}`}>
+                {fmtPct(t.change24hPct)} · {fmtCompact(t.volume24h)}
+              </div>
+            </Link>
+          );
+        })}
       </div>
+
+      <FavoritesHeatmap tf={tf} />
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">

@@ -21,8 +21,13 @@ interface AnthropicMessageResponse {
   content: { type: string; text?: string }[];
 }
 
+export interface ChatTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 /** Minimal fetch-based Anthropic Messages API client (edge-runtime compatible). */
-async function callClaude(system: string, userContent: string, maxTokens: number): Promise<string> {
+async function callClaudeMessages(system: string, messages: ChatTurn[], maxTokens: number): Promise<string> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -34,7 +39,7 @@ async function callClaude(system: string, userContent: string, maxTokens: number
       model: MODEL,
       max_tokens: maxTokens,
       system,
-      messages: [{ role: "user", content: userContent }],
+      messages,
     }),
   });
   if (!res.ok) {
@@ -43,6 +48,10 @@ async function callClaude(system: string, userContent: string, maxTokens: number
   }
   const data = (await res.json()) as AnthropicMessageResponse;
   return data.content.find((b) => b.type === "text")?.text ?? "{}";
+}
+
+async function callClaude(system: string, userContent: string, maxTokens: number): Promise<string> {
+  return callClaudeMessages(system, [{ role: "user", content: userContent }], maxTokens);
 }
 
 /**
@@ -141,6 +150,55 @@ export async function composeStrategy(description: string): Promise<CustomStrate
     conditions,
     minScore: Math.min(100, Math.max(0, Math.round(parsed.minScore ?? 60))),
   };
+}
+
+/**
+ * Conversational follow-ups on an analysis: the model answers questions about
+ * the deterministic engine's structured output (scores, structures, levels,
+ * macro events) — it never invents levels or new calculations.
+ */
+export async function chatOnAnalysis(
+  analysis: StrategyAnalysis,
+  opportunities: Opportunity[],
+  events: EconomicEvent[],
+  messages: ChatTurn[],
+): Promise<string> {
+  if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
+
+  const context = {
+    symbol: analysis.symbol,
+    timeframe: analysis.timeframe,
+    lastPrice: analysis.lastPrice,
+    trend: analysis.trend,
+    higherTimeframeTrend: analysis.higherTimeframeTrend,
+    volumeProfile: { poc: analysis.volumeProfile.poc, vah: analysis.volumeProfile.vah, val: analysis.volumeProfile.val },
+    unfilledFvgs: analysis.fvgs.filter((g) => !g.filled).slice(-8),
+    activeOrderBlocks: analysis.orderBlocks.filter((b) => !b.mitigated).slice(-8),
+    recentSwings: analysis.swings.slice(-8),
+    recentLiquiditySweeps: analysis.liquiditySweeps.slice(-5),
+    structureBreaks: analysis.structureBreaks.slice(-5),
+    anchoredVwap: analysis.anchoredVwap
+      ? { anchorType: analysis.anchoredVwap.anchorType, value: analysis.anchoredVwap.value }
+      : null,
+    sessionLevels: analysis.sessionLevels.sessions,
+    scoredOpportunities: opportunities,
+    upcomingHighImpactEvents: events
+      .filter((e) => e.impact === "high" && e.timestamp * 1000 > Date.now())
+      .slice(0, 10),
+  };
+
+  return callClaudeMessages(
+    [
+      "You are a market analyst answering follow-up questions about one symbol's technical analysis on a trading-intelligence platform.",
+      "You are given deterministic, pre-computed technical structures (fair value gaps, order blocks, volume profile, trend state, swing points, liquidity sweeps, BOS/CHoCH structure breaks, anchored VWAP, session levels), confluence-scored setups with their factor breakdowns, and upcoming economic events.",
+      "Answer strictly from this data. Never invent price levels — only reference levels present in the input. If the data cannot answer the question, say so.",
+      "Explain how the confluence score is composed of its listed factors when asked why something scores as it does; discuss invalidation in terms of the provided stop, structure and levels.",
+      "Analysis and education only, not financial advice. Answer in plain prose (no JSON), concise: 2-6 sentences unless more detail is genuinely needed.",
+      `Analysis context: ${JSON.stringify(context)}`,
+    ].join(" "),
+    messages,
+    1200,
+  );
 }
 
 export interface JournalReview {

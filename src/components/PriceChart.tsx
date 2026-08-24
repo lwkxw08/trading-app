@@ -10,7 +10,7 @@ import {
   type IPriceLine,
   type ISeriesApi,
 } from "lightweight-charts";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Candle } from "@/lib/market/types";
 
 export interface LevelLine {
@@ -20,13 +20,74 @@ export interface LevelLine {
   dashed?: boolean;
 }
 
-export default function PriceChart({ candles, levels }: { candles: Candle[]; levels: LevelLine[] }) {
+export interface ZoneBox {
+  top: number;
+  bottom: number;
+  /** unix seconds of the bar the zone starts at */
+  from: number;
+  color: string;
+  label: string;
+}
+
+export default function PriceChart({
+  candles,
+  levels,
+  zones = [],
+  drawMode = false,
+  onPriceClick,
+}: {
+  candles: Candle[];
+  levels: LevelLine[];
+  zones?: ZoneBox[];
+  drawMode?: boolean;
+  onPriceClick?: (price: number) => void;
+}) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const datasetRef = useRef<number | null>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
+  const zonesRef = useRef<ZoneBox[]>(zones);
+  const clickRef = useRef<{ drawMode: boolean; onPriceClick?: (price: number) => void }>({ drawMode, onPriceClick });
   const [fullscreen, setFullscreen] = useState(false);
+
+  zonesRef.current = zones;
+  clickRef.current = { drawMode, onPriceClick };
+
+  const drawZones = useCallback(() => {
+    const canvas = overlayRef.current;
+    const chart = chartRef.current;
+    const series = seriesRef.current;
+    const container = containerRef.current;
+    if (!canvas || !chart || !series || !container) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = container.clientWidth;
+    const h = container.clientHeight;
+    if (canvas.width !== w * dpr || canvas.height !== h * dpr) {
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+      canvas.style.width = `${w}px`;
+      canvas.style.height = `${h}px`;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    const paneWidth = chart.timeScale().width();
+    for (const z of zonesRef.current) {
+      const yTop = series.priceToCoordinate(z.top);
+      const yBottom = series.priceToCoordinate(z.bottom);
+      if (yTop == null || yBottom == null) continue;
+      const xFrom = chart.timeScale().timeToCoordinate(z.from as never) ?? 0;
+      ctx.fillStyle = z.color;
+      ctx.fillRect(xFrom, yTop, Math.max(0, paneWidth - xFrom), yBottom - yTop);
+      ctx.fillStyle = "#c8cfdb";
+      ctx.font = "10px sans-serif";
+      ctx.fillText(z.label, Math.max(xFrom + 4, 4), Math.min(yTop + 12, h - 4));
+    }
+  }, []);
 
   useEffect(() => {
     if (!fullscreen) return;
@@ -73,15 +134,27 @@ export default function PriceChart({ candles, levels }: { candles: Candle[]; lev
     volumeRef.current = volume;
 
     const observer = new ResizeObserver(() => {
-      if (containerRef.current)
+      if (containerRef.current) {
         chart.applyOptions({
           width: containerRef.current.clientWidth,
           height: containerRef.current.clientHeight,
         });
+        drawZones();
+      }
     });
     observer.observe(containerRef.current);
 
+    const onRangeChange = () => drawZones();
+    chart.timeScale().subscribeVisibleLogicalRangeChange(onRangeChange);
+    chart.subscribeClick((param) => {
+      const { drawMode: dm, onPriceClick: cb } = clickRef.current;
+      if (!dm || !cb || !param.point || !seriesRef.current) return;
+      const price = seriesRef.current.coordinateToPrice(param.point.y);
+      if (price != null) cb(price);
+    });
+
     return () => {
+      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onRangeChange);
       observer.disconnect();
       chart.remove();
       chartRef.current = null;
@@ -89,30 +162,49 @@ export default function PriceChart({ candles, levels }: { candles: Candle[]; lev
       volumeRef.current = null;
       priceLinesRef.current = [];
     };
-  }, []);
+  }, [drawZones]);
 
   useEffect(() => {
     const series = seriesRef.current;
     const volume = volumeRef.current;
     if (!series || !volume || candles.length === 0) return;
-    series.setData(
-      candles.map((c) => ({
-        time: c.time as never,
-        open: c.open,
-        high: c.high,
-        low: c.low,
-        close: c.close,
-      })),
-    );
-    volume.setData(
-      candles.map((c) => ({
+    const first = candles[0].time;
+    const isNewDataset = datasetRef.current !== first;
+    if (isNewDataset) {
+      datasetRef.current = first;
+      series.setData(
+        candles.map((c) => ({
+          time: c.time as never,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+        })),
+      );
+      volume.setData(
+        candles.map((c) => ({
+          time: c.time as never,
+          value: c.volume,
+          color: c.close >= c.open ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)",
+        })),
+      );
+      chartRef.current?.timeScale().fitContent();
+    } else {
+      // Live tick: update only the latest bar, preserving the user's zoom/scroll.
+      const c = candles[candles.length - 1];
+      series.update({ time: c.time as never, open: c.open, high: c.high, low: c.low, close: c.close });
+      volume.update({
         time: c.time as never,
         value: c.volume,
         color: c.close >= c.open ? "rgba(34,197,94,0.35)" : "rgba(239,68,68,0.35)",
-      })),
-    );
-    chartRef.current?.timeScale().fitContent();
-  }, [candles]);
+      });
+    }
+    drawZones();
+  }, [candles, drawZones]);
+
+  useEffect(() => {
+    drawZones();
+  }, [zones, drawZones]);
 
   useEffect(() => {
     const series = seriesRef.current;
@@ -147,10 +239,13 @@ export default function PriceChart({ candles, levels }: { candles: Candle[]; lev
       >
         {fullscreen ? "✕ Exit full screen" : "⛶ Full screen"}
       </button>
-      <div
-        ref={containerRef}
-        className={`w-full overflow-hidden rounded-lg border border-edge ${fullscreen ? "flex-1" : "h-[480px]"}`}
-      />
+      <div className={`relative w-full ${fullscreen ? "flex-1" : "h-[480px]"}`}>
+        <div
+          ref={containerRef}
+          className={`h-full w-full overflow-hidden rounded-lg border border-edge ${drawMode ? "cursor-crosshair" : ""}`}
+        />
+        <canvas ref={overlayRef} className="pointer-events-none absolute inset-0" />
+      </div>
     </div>
   );
 }

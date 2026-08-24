@@ -2,12 +2,16 @@
 
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import AiChat from "@/components/AiChat";
 import OpportunityCard, { FavoriteStar } from "@/components/OpportunityCard";
 import { apiUrl } from "@/components/api";
-import PriceChart, { type LevelLine } from "@/components/PriceChart";
+import PriceChart, { type LevelLine, type ZoneBox } from "@/components/PriceChart";
 import TradePlanBuilder from "@/components/TradePlanBuilder";
+import MtfDashboard from "@/components/MtfDashboard";
+import { useLiveKline } from "@/components/useLiveMarket";
 import { fmtPrice } from "@/components/format";
 import type { AiAnalysis } from "@/lib/ai/analyze";
+import { addDrawing, clearDrawings, loadDrawings } from "@/lib/drawings/store";
 import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
 import type { Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
@@ -39,6 +43,27 @@ export default function AnalyzeSymbol() {
   const [layers, setLayers] = useState<Record<LayerId, boolean>>(
     () => Object.fromEntries(LAYER_DEFS.map((l) => [l.id, true])) as Record<LayerId, boolean>,
   );
+  const liveCandle = useLiveKline(symbol, tf);
+  const [drawMode, setDrawMode] = useState(false);
+  const [drawings, setDrawings] = useState<number[]>([]);
+
+  useEffect(() => {
+    setDrawings(loadDrawings(symbol));
+    setDrawMode(false);
+  }, [symbol]);
+
+  const onPriceClick = useCallback(
+    (price: number) => setDrawings(addDrawing(symbol, price)),
+    [symbol],
+  );
+
+  const liveCandles = useMemo<Candle[]>(() => {
+    if (!liveCandle || candles.length === 0) return candles;
+    const last = candles[candles.length - 1];
+    if (liveCandle.time === last.time) return [...candles.slice(0, -1), liveCandle];
+    if (liveCandle.time > last.time) return [...candles, liveCandle];
+    return candles;
+  }, [candles, liveCandle]);
 
   useEffect(() => {
     setError(null);
@@ -87,19 +112,6 @@ export default function AnalyzeSymbol() {
       out.push({ price: analysis.volumeProfile.vah, color: "#eab30880", title: "VAH", dashed: true });
       out.push({ price: analysis.volumeProfile.val, color: "#eab30880", title: "VAL", dashed: true });
     }
-    if (layers.fvg) {
-      for (const g of analysis.fvgs.filter((g) => !g.filled).slice(-3)) {
-        const color = g.direction === "bullish" ? "#22c55e" : "#ef4444";
-        out.push({ price: g.top, color, title: `FVG ${g.direction} top`, dashed: true });
-        out.push({ price: g.bottom, color, title: `FVG ${g.direction} btm`, dashed: true });
-      }
-    }
-    if (layers.orderBlocks) {
-      for (const b of analysis.orderBlocks.filter((b) => !b.mitigated).slice(-2)) {
-        const color = b.direction === "bullish" ? "#14b8a6" : "#f97316";
-        out.push({ price: b.direction === "bullish" ? b.top : b.bottom, color, title: `OB ${b.direction}`, dashed: true });
-      }
-    }
     if (layers.avwap && analysis.anchoredVwap) {
       out.push({ price: analysis.anchoredVwap.value, color: "#a855f7", title: "AVWAP", dashed: true });
     }
@@ -114,8 +126,39 @@ export default function AnalyzeSymbol() {
       out.push({ price: selectedOpp.stopLoss, color: "#ef4444", title: "SL" });
       out.push({ price: selectedOpp.takeProfit, color: "#22c55e", title: "TP" });
     }
+    for (const [i, price] of drawings.entries()) {
+      out.push({ price, color: "#e2e8f0", title: `Level ${i + 1}` });
+    }
     return out;
-  }, [analysis, selectedOpp, layers]);
+  }, [analysis, selectedOpp, layers, drawings]);
+
+  const zones = useMemo<ZoneBox[]>(() => {
+    if (!analysis) return [];
+    const out: ZoneBox[] = [];
+    if (layers.fvg) {
+      for (const g of analysis.fvgs.filter((g) => !g.filled).slice(-3)) {
+        out.push({
+          top: g.top,
+          bottom: g.bottom,
+          from: g.time,
+          color: g.direction === "bullish" ? "rgba(34,197,94,0.14)" : "rgba(239,68,68,0.14)",
+          label: `FVG ${g.direction}`,
+        });
+      }
+    }
+    if (layers.orderBlocks) {
+      for (const b of analysis.orderBlocks.filter((b) => !b.mitigated).slice(-2)) {
+        out.push({
+          top: b.top,
+          bottom: b.bottom,
+          from: b.time,
+          color: b.direction === "bullish" ? "rgba(20,184,166,0.16)" : "rgba(249,115,22,0.16)",
+          label: `OB ${b.direction}`,
+        });
+      }
+    }
+    return out;
+  }, [analysis, layers]);
 
   return (
     <div className="space-y-4">
@@ -125,7 +168,7 @@ export default function AnalyzeSymbol() {
             <FavoriteStar symbol={symbol} />
             {symbol}
           </h1>
-          {analysis && <span className="font-mono text-lg">{fmtPrice(analysis.lastPrice)}</span>}
+          {analysis && <span className="font-mono text-lg">{fmtPrice(liveCandle?.close ?? analysis.lastPrice)}</span>}
           {analysis && (
             <span
               className={`text-xs font-semibold uppercase ${
@@ -181,7 +224,40 @@ export default function AnalyzeSymbol() {
               {Object.values(layers).every(Boolean) ? "Hide all" : "Show all"}
             </button>
           </div>
-          <PriceChart candles={candles} levels={levels} />
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-edge bg-surface px-3 py-2">
+            <span className="text-xs font-semibold text-muted">Drawing:</span>
+            <button
+              onClick={() => setDrawMode((d) => !d)}
+              className={`rounded-md px-2 py-1 text-xs font-semibold ${
+                drawMode ? "bg-accent text-white" : "border border-edge text-muted hover:text-foreground"
+              }`}
+            >
+              {drawMode ? "✏ Drawing on — click chart to add level" : "✏ Draw level"}
+            </button>
+            {drawings.length > 0 && (
+              <>
+                <span className="text-xs text-muted">
+                  {drawings.length} manual level{drawings.length > 1 ? "s" : ""}
+                </span>
+                <button
+                  onClick={() => setDrawings(clearDrawings(symbol))}
+                  className="text-xs text-bear hover:underline"
+                >
+                  Clear
+                </button>
+              </>
+            )}
+            <span className="ml-auto text-[10px] text-muted">Levels saved per symbol in this browser</span>
+          </div>
+          <PriceChart
+            candles={liveCandles}
+            levels={levels}
+            zones={zones}
+            drawMode={drawMode}
+            onPriceClick={onPriceClick}
+          />
+
+          <MtfDashboard symbol={symbol} />
 
           {/* AI analysis */}
           <section className="rounded-lg border border-edge bg-surface p-4">
@@ -214,6 +290,8 @@ export default function AnalyzeSymbol() {
               )
             )}
           </section>
+
+          <AiChat symbol={symbol} tf={tf} />
         </div>
 
         <div className="space-y-4">
