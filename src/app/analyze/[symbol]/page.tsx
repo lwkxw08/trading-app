@@ -2,7 +2,7 @@
 
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import OpportunityCard from "@/components/OpportunityCard";
+import OpportunityCard, { FavoriteStar } from "@/components/OpportunityCard";
 import { apiUrl } from "@/components/api";
 import PriceChart, { type LevelLine } from "@/components/PriceChart";
 import TradePlanBuilder from "@/components/TradePlanBuilder";
@@ -12,6 +12,16 @@ import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
 import type { Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
+
+const LAYER_DEFS = [
+  { id: "volumeProfile", label: "Volume profile" },
+  { id: "fvg", label: "FVGs" },
+  { id: "orderBlocks", label: "Order blocks" },
+  { id: "avwap", label: "AVWAP" },
+  { id: "sessions", label: "Session levels" },
+  { id: "tradeLevels", label: "Entry/SL/TP" },
+] as const;
+type LayerId = (typeof LAYER_DEFS)[number]["id"];
 
 export default function AnalyzeSymbol() {
   const params = useParams<{ symbol: string }>();
@@ -26,6 +36,9 @@ export default function AnalyzeSymbol() {
   const [aiError, setAiError] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [layers, setLayers] = useState<Record<LayerId, boolean>>(
+    () => Object.fromEntries(LAYER_DEFS.map((l) => [l.id, true])) as Record<LayerId, boolean>,
+  );
 
   useEffect(() => {
     setError(null);
@@ -68,40 +81,50 @@ export default function AnalyzeSymbol() {
 
   const levels = useMemo<LevelLine[]>(() => {
     if (!analysis) return [];
-    const out: LevelLine[] = [
-      { price: analysis.volumeProfile.poc, color: "#eab308", title: "POC" },
-      { price: analysis.volumeProfile.vah, color: "#eab30880", title: "VAH", dashed: true },
-      { price: analysis.volumeProfile.val, color: "#eab30880", title: "VAL", dashed: true },
-    ];
-    for (const g of analysis.fvgs.filter((g) => !g.filled).slice(-3)) {
-      const color = g.direction === "bullish" ? "#22c55e" : "#ef4444";
-      out.push({ price: g.top, color, title: `FVG ${g.direction} top`, dashed: true });
-      out.push({ price: g.bottom, color, title: `FVG ${g.direction} btm`, dashed: true });
+    const out: LevelLine[] = [];
+    if (layers.volumeProfile) {
+      out.push({ price: analysis.volumeProfile.poc, color: "#eab308", title: "POC" });
+      out.push({ price: analysis.volumeProfile.vah, color: "#eab30880", title: "VAH", dashed: true });
+      out.push({ price: analysis.volumeProfile.val, color: "#eab30880", title: "VAL", dashed: true });
     }
-    for (const b of analysis.orderBlocks.filter((b) => !b.mitigated).slice(-2)) {
-      const color = b.direction === "bullish" ? "#14b8a6" : "#f97316";
-      out.push({ price: b.direction === "bullish" ? b.top : b.bottom, color, title: `OB ${b.direction}`, dashed: true });
+    if (layers.fvg) {
+      for (const g of analysis.fvgs.filter((g) => !g.filled).slice(-3)) {
+        const color = g.direction === "bullish" ? "#22c55e" : "#ef4444";
+        out.push({ price: g.top, color, title: `FVG ${g.direction} top`, dashed: true });
+        out.push({ price: g.bottom, color, title: `FVG ${g.direction} btm`, dashed: true });
+      }
     }
-    if (analysis.anchoredVwap) {
+    if (layers.orderBlocks) {
+      for (const b of analysis.orderBlocks.filter((b) => !b.mitigated).slice(-2)) {
+        const color = b.direction === "bullish" ? "#14b8a6" : "#f97316";
+        out.push({ price: b.direction === "bullish" ? b.top : b.bottom, color, title: `OB ${b.direction}`, dashed: true });
+      }
+    }
+    if (layers.avwap && analysis.anchoredVwap) {
       out.push({ price: analysis.anchoredVwap.value, color: "#a855f7", title: "AVWAP", dashed: true });
     }
-    for (const s of analysis.sessionLevels.sessions) {
-      out.push({ price: s.high, color: "#64748b", title: `${s.name} H`, dashed: true });
-      out.push({ price: s.low, color: "#64748b", title: `${s.name} L`, dashed: true });
+    if (layers.sessions) {
+      for (const s of analysis.sessionLevels.sessions) {
+        out.push({ price: s.high, color: "#64748b", title: `${s.name} H`, dashed: true });
+        out.push({ price: s.low, color: "#64748b", title: `${s.name} L`, dashed: true });
+      }
     }
-    if (selectedOpp) {
+    if (layers.tradeLevels && selectedOpp) {
       out.push({ price: selectedOpp.entry, color: "#4f8cff", title: "Entry" });
       out.push({ price: selectedOpp.stopLoss, color: "#ef4444", title: "SL" });
       out.push({ price: selectedOpp.takeProfit, color: "#22c55e", title: "TP" });
     }
     return out;
-  }, [analysis, selectedOpp]);
+  }, [analysis, selectedOpp, layers]);
 
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-baseline gap-3">
-          <h1 className="text-xl font-bold">{symbol}</h1>
+          <h1 className="flex items-center gap-2 text-xl font-bold">
+            <FavoriteStar symbol={symbol} />
+            {symbol}
+          </h1>
           {analysis && <span className="font-mono text-lg">{fmtPrice(analysis.lastPrice)}</span>}
           {analysis && (
             <span
@@ -132,6 +155,32 @@ export default function AnalyzeSymbol() {
 
       <div className="grid gap-4 xl:grid-cols-3">
         <div className="space-y-4 xl:col-span-2">
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-edge bg-surface px-3 py-2">
+            <span className="text-xs font-semibold text-muted">Chart layers:</span>
+            {LAYER_DEFS.map((l) => (
+              <label key={l.id} className="flex cursor-pointer items-center gap-1.5 text-xs">
+                <input
+                  type="checkbox"
+                  checked={layers[l.id]}
+                  onChange={(e) => setLayers((prev) => ({ ...prev, [l.id]: e.target.checked }))}
+                  className="accent-[var(--accent)]"
+                />
+                {l.label}
+              </label>
+            ))}
+            <button
+              onClick={() =>
+                setLayers(
+                  Object.fromEntries(
+                    LAYER_DEFS.map((l) => [l.id, !Object.values(layers).every(Boolean)]),
+                  ) as Record<LayerId, boolean>,
+                )
+              }
+              className="ml-auto text-xs text-accent hover:underline"
+            >
+              {Object.values(layers).every(Boolean) ? "Hide all" : "Show all"}
+            </button>
+          </div>
           <PriceChart candles={candles} levels={levels} />
 
           {/* AI analysis */}

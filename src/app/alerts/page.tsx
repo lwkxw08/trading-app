@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { checkAlertRules } from "@/lib/alerts/monitor";
 import { loadDelivery, loadEvents, loadRules, saveDelivery, saveEvents, saveRules } from "@/lib/alerts/store";
@@ -186,7 +187,7 @@ export default function AlertsPage() {
         <section className="rounded-lg border border-edge bg-surface p-4">
           <h2 className="font-semibold">Price level alert</h2>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <input value={pSymbol} onChange={(e) => setPSymbol(e.target.value)} className={`${inputCls} w-28 font-mono uppercase`} placeholder="BTCUSDT" />
+            <SymbolInput value={pSymbol} onChange={setPSymbol} className={`${inputCls} w-32 font-mono uppercase`} placeholder="BTCUSDT" />
             <select value={pCondition} onChange={(e) => setPCondition(e.target.value as typeof pCondition)} className={inputCls}>
               <option value="above">crosses above</option>
               <option value="below">crosses below</option>
@@ -201,7 +202,9 @@ export default function AlertsPage() {
           <h2 className="mt-4 font-semibold">Setup alert</h2>
           <p className="text-xs text-muted">Fires when the confluence engine finds a qualifying setup.</p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
-            <input value={sSymbols} onChange={(e) => setSSymbols(e.target.value)} className={`${inputCls} flex-1 font-mono uppercase`} placeholder="symbols, blank = default universe" />
+            <div className="flex-1 [&>div]:w-full">
+              <SymbolInput value={sSymbols} onChange={setSSymbols} multi className={`${inputCls} w-full font-mono uppercase`} placeholder="symbols, blank = default universe" />
+            </div>
             <select value={sTf} onChange={(e) => setSTf(e.target.value as Timeframe)} className={inputCls}>
               {TIMEFRAMES.map((t) => (
                 <option key={t} value={t}>

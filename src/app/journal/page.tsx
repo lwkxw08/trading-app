@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
 import type { JournalReview } from "@/lib/ai/analyze";
@@ -178,7 +179,9 @@ export default function JournalPage() {
           <section className="rounded-lg border border-edge bg-surface p-4">
             <h2 className="font-semibold">Log a trade</h2>
             <div className="mt-3 grid gap-2 sm:grid-cols-4">
-              <input value={symbol} onChange={(e) => setSymbol(e.target.value)} placeholder="Symbol" className={`${inputCls} font-mono uppercase`} />
+              <div className="[&>div]:w-full">
+                <SymbolInput value={symbol} onChange={setSymbol} placeholder="Symbol" className={`${inputCls} w-full font-mono uppercase`} />
+              </div>
               <select value={tf} onChange={(e) => setTf(e.target.value as Timeframe)} className={inputCls}>
                 {TIMEFRAMES.map((t) => (
                   <option key={t} value={t}>

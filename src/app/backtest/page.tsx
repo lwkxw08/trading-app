@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
 import type { BacktestResult, SweepPoint } from "@/lib/backtest/engine";
@@ -172,7 +173,7 @@ export default function BacktestPage() {
           <h2 className="font-semibold">Setup</h2>
           <div className="mt-3 space-y-3">
             <div className="flex gap-2">
-              <input value={symbol} onChange={(e) => setSymbol(e.target.value)} className={`${inputCls} w-32 font-mono uppercase`} />
+              <SymbolInput value={symbol} onChange={setSymbol} className={`${inputCls} w-36 font-mono uppercase`} />
               <select value={tf} onChange={(e) => setTf(e.target.value as Timeframe)} className={inputCls}>
                 {TIMEFRAMES.map((t) => (
                   <option key={t} value={t}>

@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import OpportunityCard from "@/components/OpportunityCard";
+import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { captureSignals, loadSignals, saveSignals } from "@/lib/signals/store";
@@ -72,12 +73,15 @@ export default function Scanner() {
         </label>
         <label className="block flex-1 text-sm">
           <span className="text-xs text-muted">Symbols (comma-separated, blank = default universe)</span>
-          <input
-            value={symbols}
-            onChange={(e) => setSymbols(e.target.value)}
-            placeholder="BTCUSDT, ETHUSDT, SOLUSDT…"
-            className="mt-1 w-full rounded-md border border-edge bg-background px-2 py-1.5 text-sm outline-none focus:border-accent"
-          />
+          <div className="mt-1 [&>div]:w-full">
+            <SymbolInput
+              value={symbols}
+              onChange={setSymbols}
+              multi
+              placeholder="BTCUSDT, ETHUSDT, SOLUSDT…"
+              className="w-full rounded-md border border-edge bg-background px-2 py-1.5 text-sm outline-none focus:border-accent"
+            />
+          </div>
         </label>
         <label className="block text-sm">
           <span className="text-xs text-muted">Direction</span>

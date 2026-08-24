@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import PineTemplates from "@/components/PineTemplates";
+import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { fmtPrice } from "@/components/format";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
@@ -255,10 +256,10 @@ export default function StrategyLab() {
           <section className="rounded-lg border border-edge bg-surface p-4">
             <h2 className="font-semibold">Evaluate live</h2>
             <div className="mt-2 flex gap-2">
-              <input
+              <SymbolInput
                 value={symbol}
-                onChange={(e) => setSymbol(e.target.value)}
-                className="w-32 rounded-md border border-edge bg-background px-2 py-1 font-mono text-sm uppercase outline-none focus:border-accent"
+                onChange={setSymbol}
+                className="w-36 rounded-md border border-edge bg-background px-2 py-1 font-mono text-sm uppercase outline-none focus:border-accent"
               />
               <select
                 value={tf}

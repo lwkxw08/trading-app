@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import type { Opportunity } from "@/lib/strategies/types";
 import { fmtPrice } from "./format";
+import { useFavorites } from "./useFavorites";
 
 export function ScoreBadge({ score }: { score: number }) {
   const color = score >= 70 ? "bg-bull/20 text-bull" : score >= 55 ? "bg-accent/20 text-accent" : "bg-edge text-muted";
@@ -22,12 +23,28 @@ export function DirectionBadge({ direction }: { direction: "long" | "short" }) {
   );
 }
 
+export function FavoriteStar({ symbol }: { symbol: string }) {
+  const { favorites, toggle } = useFavorites();
+  const isFav = favorites.includes(symbol.toUpperCase());
+  return (
+    <button
+      type="button"
+      onClick={() => toggle(symbol)}
+      title={isFav ? "Remove from favourites" : "Save to favourites"}
+      className={`text-sm leading-none ${isFav ? "text-amber-400" : "text-muted hover:text-amber-400"}`}
+    >
+      {isFav ? "★" : "☆"}
+    </button>
+  );
+}
+
 export default function OpportunityCard({ opp }: { opp: Opportunity }) {
   const [expanded, setExpanded] = useState(false);
   return (
     <div className="rounded-lg border border-edge bg-surface p-4">
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
+          <FavoriteStar symbol={opp.symbol} />
           <Link href={`/analyze/${opp.symbol}?tf=${opp.timeframe}`} className="font-semibold hover:text-accent">
             {opp.symbol}
           </Link>
