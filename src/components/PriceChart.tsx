@@ -10,7 +10,7 @@ import {
   type IPriceLine,
   type ISeriesApi,
 } from "lightweight-charts";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Candle } from "@/lib/market/types";
 
 export interface LevelLine {
@@ -26,6 +26,20 @@ export default function PriceChart({ candles, levels }: { candles: Candle[]; lev
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
   const volumeRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const priceLinesRef = useRef<IPriceLine[]>([]);
+  const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [fullscreen]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -38,7 +52,7 @@ export default function PriceChart({ candles, levels }: { candles: Candle[]; lev
         vertLines: { color: "#1f2530" },
         horzLines: { color: "#1f2530" },
       },
-      height: 480,
+      height: containerRef.current.clientHeight,
       timeScale: { timeVisible: true, secondsVisible: false },
     });
     const series = chart.addSeries(CandlestickSeries, {
@@ -59,7 +73,11 @@ export default function PriceChart({ candles, levels }: { candles: Candle[]; lev
     volumeRef.current = volume;
 
     const observer = new ResizeObserver(() => {
-      if (containerRef.current) chart.applyOptions({ width: containerRef.current.clientWidth });
+      if (containerRef.current)
+        chart.applyOptions({
+          width: containerRef.current.clientWidth,
+          height: containerRef.current.clientHeight,
+        });
     });
     observer.observe(containerRef.current);
 
@@ -112,5 +130,27 @@ export default function PriceChart({ candles, levels }: { candles: Candle[]; lev
     );
   }, [levels, candles]);
 
-  return <div ref={containerRef} className="w-full overflow-hidden rounded-lg border border-edge" />;
+  return (
+    <div
+      className={
+        fullscreen
+          ? "fixed inset-0 z-50 flex flex-col bg-background p-3"
+          : "relative"
+      }
+    >
+      <button
+        onClick={() => setFullscreen((f) => !f)}
+        title={fullscreen ? "Exit full screen (Esc)" : "Full screen"}
+        className={`absolute z-10 rounded-md border border-edge bg-surface/90 px-2 py-1 text-xs text-muted hover:text-foreground ${
+          fullscreen ? "top-5 right-5" : "top-2 right-3"
+        }`}
+      >
+        {fullscreen ? "✕ Exit full screen" : "⛶ Full screen"}
+      </button>
+      <div
+        ref={containerRef}
+        className={`w-full overflow-hidden rounded-lg border border-edge ${fullscreen ? "flex-1" : "h-[480px]"}`}
+      />
+    </div>
+  );
 }
