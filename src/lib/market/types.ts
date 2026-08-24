@@ -39,5 +39,7 @@ export interface MarketDataProvider {
   isConfigured(): boolean;
   listInstruments(): Promise<Instrument[]>;
   getCandles(symbol: string, timeframe: Timeframe, limit?: number): Promise<Candle[]>;
+  /** Candles strictly before the given unix-seconds open time (for paginated history). Optional. */
+  getCandlesBefore?(symbol: string, timeframe: Timeframe, beforeTime: number, limit?: number): Promise<Candle[]>;
   getTickers(symbols: string[]): Promise<Ticker[]>;
 }

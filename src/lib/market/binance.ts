@@ -76,6 +76,21 @@ export class BinanceProvider implements MarketDataProvider {
     }));
   }
 
+  async getCandlesBefore(symbol: string, timeframe: Timeframe, beforeTime: number, limit = 1000): Promise<Candle[]> {
+    const endTime = beforeTime * 1000 - 1;
+    const path = `/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${TF_MAP[timeframe]}&limit=${Math.min(limit, 1000)}&endTime=${endTime}`;
+    const res = await fetchWithFallback(path, `klines for ${symbol}`);
+    const raw = (await res.json()) as BinanceKline[];
+    return raw.map((k) => ({
+      time: Math.floor(k[0] / 1000),
+      open: parseFloat(k[1]),
+      high: parseFloat(k[2]),
+      low: parseFloat(k[3]),
+      close: parseFloat(k[4]),
+      volume: parseFloat(k[5] as string),
+    }));
+  }
+
   async getTickers(symbols: string[]): Promise<Ticker[]> {
     const path = `/api/v3/ticker/24hr?symbols=${encodeURIComponent(JSON.stringify(symbols))}`;
     const res = await fetchWithFallback(path, "24h tickers");

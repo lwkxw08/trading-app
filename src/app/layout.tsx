@@ -25,8 +25,9 @@ const NAV = [
   { href: "/analyze", label: "Analysis" },
   { href: "/strategies", label: "Strategy Lab" },
   { href: "/backtest", label: "Backtest" },
+  { href: "/signals", label: "Signals" },
+  { href: "/alerts", label: "Alerts" },
   { href: "/journal", label: "Journal" },
-  { href: "/indicators", label: "Indicator Studio" },
   { href: "/calendar", label: "Macro Calendar" },
 ];
 

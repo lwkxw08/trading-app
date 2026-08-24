@@ -1,15 +1,46 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { apiUrl } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
-import type { BacktestResult } from "@/lib/backtest/engine";
+import type { BacktestResult, SweepPoint } from "@/lib/backtest/engine";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy } from "@/lib/strategies/custom";
 
 interface ConditionState {
   enabled: boolean;
   weight: number;
+}
+
+interface SavedRun {
+  id: string;
+  savedAt: number;
+  label: string;
+  symbol: string;
+  tf: Timeframe;
+  strategyType: "builtin" | "custom";
+  minScore: number;
+  direction: string;
+  bars: number;
+  feePct: number;
+  slippagePct: number;
+  totalTrades: number;
+  winRate: number | null;
+  expectancyR: number | null;
+  totalR: number;
+  profitFactor: number | null;
+  maxDrawdownR: number;
+}
+
+const RUNS_KEY = "tradeintel.backtest.runs.v1";
+
+function loadRuns(): SavedRun[] {
+  try {
+    const raw = localStorage.getItem(RUNS_KEY);
+    return raw ? (JSON.parse(raw) as SavedRun[]) : [];
+  } catch {
+    return [];
+  }
 }
 
 export default function BacktestPage() {
@@ -19,14 +50,23 @@ export default function BacktestPage() {
   const [minScore, setMinScore] = useState(55);
   const [direction, setDirection] = useState<"both" | "long" | "short">("both");
   const [maxHoldBars, setMaxHoldBars] = useState(100);
+  const [bars, setBars] = useState(1000);
+  const [feePct, setFeePct] = useState(0);
+  const [slippagePct, setSlippagePct] = useState(0);
   const [conditions, setConditions] = useState<Record<ConditionId, ConditionState>>(
     () => Object.fromEntries(CONDITION_LIBRARY.map((c) => [c.id, { enabled: false, weight: c.defaultWeight }])) as Record<ConditionId, ConditionState>,
   );
   const [customMinScore, setCustomMinScore] = useState(60);
 
   const [result, setResult] = useState<BacktestResult | null>(null);
+  const [sweep, setSweep] = useState<SweepPoint[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [savedRuns, setSavedRuns] = useState<SavedRun[]>([]);
+
+  useEffect(() => {
+    setSavedRuns(loadRuns());
+  }, []);
 
   const custom = useMemo<CustomStrategy>(
     () => ({
@@ -39,32 +79,80 @@ export default function BacktestPage() {
 
   const canRun = strategyType === "builtin" || custom.conditions.length > 0;
 
-  const run = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    setResult(null);
-    fetch(apiUrl("/api/backtest"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        symbol: symbol.toUpperCase(),
-        tf,
-        strategyType,
-        custom: strategyType === "custom" ? custom : null,
-        minScore,
-        direction,
-        maxHoldBars,
-        bars: 1000,
-      }),
-    })
-      .then(async (r) => {
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.error ?? "backtest failed");
-        setResult(d.result);
+  const run = useCallback(
+    (doSweep: boolean) => {
+      setLoading(true);
+      setError(null);
+      setResult(null);
+      setSweep(null);
+      fetch(apiUrl("/api/backtest"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: symbol.toUpperCase(),
+          tf,
+          strategyType,
+          custom: strategyType === "custom" ? custom : null,
+          minScore,
+          direction,
+          maxHoldBars,
+          bars,
+          feePct,
+          slippagePct,
+          sweep: doSweep,
+        }),
       })
-      .catch((e) => setError(e.message))
-      .finally(() => setLoading(false));
-  }, [symbol, tf, strategyType, custom, minScore, direction, maxHoldBars]);
+        .then(async (r) => {
+          const d = await r.json();
+          if (!r.ok) throw new Error(d.error ?? "backtest failed");
+          if (doSweep) setSweep(d.sweep);
+          else setResult(d.result);
+        })
+        .catch((e) => setError(e.message))
+        .finally(() => setLoading(false));
+    },
+    [symbol, tf, strategyType, custom, minScore, direction, maxHoldBars, bars, feePct, slippagePct],
+  );
+
+  const saveRun = useCallback(() => {
+    if (!result) return;
+    const entry: SavedRun = {
+      id: `run-${Date.now()}`,
+      savedAt: Date.now(),
+      label: `${result.symbol} ${result.timeframe} ${strategyType === "builtin" ? `score≥${minScore}` : "custom"} ${direction}`,
+      symbol: result.symbol,
+      tf: result.timeframe,
+      strategyType,
+      minScore: strategyType === "builtin" ? minScore : customMinScore,
+      direction,
+      bars,
+      feePct,
+      slippagePct,
+      totalTrades: result.totalTrades,
+      winRate: result.winRate,
+      expectancyR: result.expectancyR,
+      totalR: result.totalR,
+      profitFactor: result.profitFactor,
+      maxDrawdownR: result.maxDrawdownR,
+    };
+    setSavedRuns((prev) => {
+      const next = [entry, ...prev].slice(0, 30);
+      try {
+        localStorage.setItem(RUNS_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, [result, strategyType, minScore, customMinScore, direction, bars, feePct, slippagePct]);
+
+  const deleteRun = useCallback((id: string) => {
+    setSavedRuns((prev) => {
+      const next = prev.filter((r) => r.id !== id);
+      try {
+        localStorage.setItem(RUNS_KEY, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+  }, []);
 
   const inputCls = "rounded-md border border-edge bg-background px-2 py-1 text-sm outline-none focus:border-accent";
 
@@ -156,25 +244,76 @@ export default function BacktestPage() {
               </div>
             )}
 
-            <div className="flex items-center gap-2 text-sm">
-              <label className="text-xs text-muted">Max hold (bars)</label>
-              <input
-                type="number"
-                min={5}
-                max={500}
-                value={maxHoldBars}
-                onChange={(e) => setMaxHoldBars(Number(e.target.value))}
-                className={`${inputCls} w-20 font-mono`}
-              />
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+              <span className="flex items-center gap-2">
+                <label className="text-xs text-muted">Max hold (bars)</label>
+                <input
+                  type="number"
+                  min={5}
+                  max={500}
+                  value={maxHoldBars}
+                  onChange={(e) => setMaxHoldBars(Number(e.target.value))}
+                  className={`${inputCls} w-20 font-mono`}
+                />
+              </span>
+              <span className="flex items-center gap-2">
+                <label className="text-xs text-muted">History (bars)</label>
+                <select value={bars} onChange={(e) => setBars(Number(e.target.value))} className={inputCls}>
+                  {[500, 1000, 2000, 3000].map((b) => (
+                    <option key={b} value={b}>
+                      {b}
+                    </option>
+                  ))}
+                </select>
+              </span>
             </div>
 
-            <button
-              onClick={run}
-              disabled={loading || !canRun}
-              className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
-            >
-              {loading ? "Backtesting…" : "Run backtest"}
-            </button>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
+              <span className="flex items-center gap-2">
+                <label className="text-xs text-muted">Fee %/side</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={feePct}
+                  onChange={(e) => setFeePct(Number(e.target.value))}
+                  className={`${inputCls} w-20 font-mono`}
+                />
+              </span>
+              <span className="flex items-center gap-2">
+                <label className="text-xs text-muted">Slippage %</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.01}
+                  value={slippagePct}
+                  onChange={(e) => setSlippagePct(Number(e.target.value))}
+                  className={`${inputCls} w-20 font-mono`}
+                />
+              </span>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                onClick={() => run(false)}
+                disabled={loading || !canRun}
+                className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {loading ? "Backtesting…" : "Run backtest"}
+              </button>
+              {strategyType === "builtin" && (
+                <button
+                  onClick={() => run(true)}
+                  disabled={loading}
+                  className="rounded-md border border-edge px-4 py-2 text-sm font-semibold hover:bg-edge disabled:opacity-50"
+                  title="Test min-score thresholds 45–80 in one run"
+                >
+                  Min-score sweep
+                </button>
+              )}
+            </div>
             {!canRun && <p className="text-xs text-muted">Enable at least one condition.</p>}
             {error && <p className="text-xs text-bear">{error}</p>}
           </div>
@@ -182,12 +321,58 @@ export default function BacktestPage() {
 
         {/* Results */}
         <div className="space-y-4 xl:col-span-2">
+          {sweep && (
+            <section className="rounded-lg border border-edge bg-surface p-4">
+              <h2 className="font-semibold">Min-score sweep — {symbol.toUpperCase()} · {tf}</h2>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="text-muted">
+                    <tr>
+                      <th className="py-1 pr-3">Min score</th>
+                      <th className="py-1 pr-3">Trades</th>
+                      <th className="py-1 pr-3">Win rate</th>
+                      <th className="py-1 pr-3">Expectancy</th>
+                      <th className="py-1 pr-3">Total R</th>
+                      <th className="py-1 pr-3">Profit factor</th>
+                      <th className="py-1">Max DD</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sweep.map((p) => (
+                      <tr key={p.minScore} className="border-t border-edge">
+                        <td className="py-1 pr-3 font-mono">{p.minScore}</td>
+                        <td className="py-1 pr-3">{p.totalTrades}</td>
+                        <td className="py-1 pr-3">{p.winRate !== null ? `${p.winRate.toFixed(0)}%` : "—"}</td>
+                        <td className={`py-1 pr-3 font-mono ${(p.expectancyR ?? 0) > 0 ? "text-bull" : (p.expectancyR ?? 0) < 0 ? "text-bear" : ""}`}>
+                          {p.expectancyR !== null ? `${p.expectancyR.toFixed(2)}R` : "—"}
+                        </td>
+                        <td className={`py-1 pr-3 font-mono ${p.totalR > 0 ? "text-bull" : p.totalR < 0 ? "text-bear" : ""}`}>
+                          {p.totalR >= 0 ? "+" : ""}
+                          {p.totalR.toFixed(2)}
+                        </td>
+                        <td className="py-1 pr-3">{p.profitFactor !== null ? p.profitFactor.toFixed(2) : "—"}</td>
+                        <td className="py-1">{p.maxDrawdownR.toFixed(2)}R</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-2 text-xs text-muted">
+                Higher thresholds trade less often — weigh expectancy against sample size before picking one.
+              </p>
+            </section>
+          )}
           {result && (
             <>
               <section className="rounded-lg border border-edge bg-surface p-4">
-                <h2 className="font-semibold">
-                  Results — {result.symbol} · {result.timeframe} · {result.barsTested} bars ({fmtTime(result.firstBarTime)} → {fmtTime(result.lastBarTime)})
-                </h2>
+                <div className="flex items-start justify-between gap-2">
+                  <h2 className="font-semibold">
+                    Results — {result.symbol} · {result.timeframe} · {result.barsTested} bars ({fmtTime(result.firstBarTime)} → {fmtTime(result.lastBarTime)})
+                  </h2>
+                  <button onClick={saveRun} className="rounded-md border border-edge px-3 py-1 text-xs font-semibold hover:bg-edge">
+                    Save run
+                  </button>
+                </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
                   <Metric label="Trades" value={String(result.totalTrades)} />
                   <Metric label="Win rate" value={result.winRate !== null ? `${result.winRate.toFixed(0)}%` : "—"} />
@@ -242,11 +427,62 @@ export default function BacktestPage() {
               </section>
             </>
           )}
-          {!result && !loading && (
+          {!result && !sweep && !loading && (
             <section className="rounded-lg border border-edge bg-surface p-4 text-sm text-muted">
-              Configure a strategy and run a backtest — up to 1000 bars of history are replayed with the exact live
-              signal logic. Note: the live macro-event penalty is excluded (no historical calendar), and fees/slippage
-              are not modeled.
+              Configure a strategy and run a backtest — up to 3000 bars of history are replayed with the exact live
+              signal logic. Fees and slippage are modeled only when set above zero, and the live macro-event penalty
+              is excluded (no historical calendar).
+            </section>
+          )}
+
+          {savedRuns.length > 0 && (
+            <section className="rounded-lg border border-edge bg-surface p-4">
+              <h2 className="font-semibold">Saved runs ({savedRuns.length})</h2>
+              <div className="mt-2 overflow-x-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="text-muted">
+                    <tr>
+                      <th className="py-1 pr-3">Run</th>
+                      <th className="py-1 pr-3">Bars</th>
+                      <th className="py-1 pr-3">Fee/slip</th>
+                      <th className="py-1 pr-3">Trades</th>
+                      <th className="py-1 pr-3">Win rate</th>
+                      <th className="py-1 pr-3">Expectancy</th>
+                      <th className="py-1 pr-3">Total R</th>
+                      <th className="py-1 pr-3">PF</th>
+                      <th className="py-1 pr-3">Max DD</th>
+                      <th className="py-1"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {savedRuns.map((r) => (
+                      <tr key={r.id} className="border-t border-edge">
+                        <td className="py-1 pr-3 whitespace-nowrap">{r.label}</td>
+                        <td className="py-1 pr-3">{r.bars}</td>
+                        <td className="py-1 pr-3 font-mono">
+                          {r.feePct}/{r.slippagePct}
+                        </td>
+                        <td className="py-1 pr-3">{r.totalTrades}</td>
+                        <td className="py-1 pr-3">{r.winRate !== null ? `${r.winRate.toFixed(0)}%` : "—"}</td>
+                        <td className={`py-1 pr-3 font-mono ${(r.expectancyR ?? 0) > 0 ? "text-bull" : (r.expectancyR ?? 0) < 0 ? "text-bear" : ""}`}>
+                          {r.expectancyR !== null ? `${r.expectancyR.toFixed(2)}R` : "—"}
+                        </td>
+                        <td className={`py-1 pr-3 font-mono ${r.totalR > 0 ? "text-bull" : r.totalR < 0 ? "text-bear" : ""}`}>
+                          {r.totalR >= 0 ? "+" : ""}
+                          {r.totalR.toFixed(2)}
+                        </td>
+                        <td className="py-1 pr-3">{r.profitFactor !== null ? r.profitFactor.toFixed(2) : "—"}</td>
+                        <td className="py-1 pr-3">{r.maxDrawdownR.toFixed(2)}R</td>
+                        <td className="py-1">
+                          <button onClick={() => deleteRun(r.id)} className="text-muted hover:text-bear">
+                            ✕
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
         </div>

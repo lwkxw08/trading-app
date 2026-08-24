@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useMemo, useState } from "react";
+import PineTemplates from "@/components/PineTemplates";
 import { apiUrl } from "@/components/api";
 import { fmtPrice } from "@/components/format";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
@@ -109,7 +110,7 @@ export default function StrategyLab() {
         <h1 className="text-xl font-bold">Strategy Lab</h1>
         <p className="text-sm text-muted">
           Compose your own strategy from the deterministic condition library, evaluate it live against any symbol, and
-          export it as a TradingView indicator.
+          export it as a TradingView indicator — or start from a pre-built Pine template below.
         </p>
       </div>
 
@@ -244,6 +245,9 @@ export default function StrategyLab() {
               </p>
             )}
           </section>
+
+          {/* Pre-built Pine templates (merged from Indicator Studio) */}
+          <PineTemplates />
         </div>
 
         {/* Live evaluation */}

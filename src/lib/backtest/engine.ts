@@ -17,6 +17,10 @@ export interface BacktestConfig {
   minScore: number; // signal threshold for the built-in confluence score
   direction: "both" | "long" | "short";
   maxHoldBars: number;
+  /** Taker fee per side as % of notional (e.g. 0.1 for Binance spot). */
+  feePct: number;
+  /** Slippage per market-order fill as % of price (entry and stop/time exits; targets fill as limits). */
+  slippagePct: number;
 }
 
 export interface BacktestTrade {
@@ -74,6 +78,7 @@ function signalAt(
   htfWindow: Candle[] | undefined,
   htf: Timeframe | undefined,
   config: BacktestConfig,
+  minScore: number,
 ): Opportunity | null {
   const a = analyze(symbol, tf, window, htfWindow && htfWindow.length >= 50 ? htfWindow : undefined, htf);
   let candidates: Opportunity[];
@@ -83,15 +88,26 @@ function signalAt(
       .map((e) => e.opportunity as Opportunity);
   } else {
     // No historical macro calendar — backtests score on technicals only.
-    candidates = scoreOpportunities(a).filter((o) => o.score >= config.minScore);
+    candidates = scoreOpportunities(a).filter((o) => o.score >= minScore);
   }
   if (config.direction !== "both") candidates = candidates.filter((o) => o.direction === config.direction);
   return candidates[0] ?? null;
 }
 
-function closeTrade(pos: OpenPosition, exitPrice: number, exitTime: number, exitReason: BacktestTrade["exitReason"], exitIndex: number): BacktestTrade {
+function closeTrade(
+  pos: OpenPosition,
+  rawExitPrice: number,
+  exitTime: number,
+  exitReason: BacktestTrade["exitReason"],
+  exitIndex: number,
+  config: BacktestConfig,
+): BacktestTrade {
   const sign = pos.direction === "long" ? 1 : -1;
-  const pnl = sign * (exitPrice - pos.entryPrice);
+  // Market-like exits (stop/time/end of data) slip against the trader; targets fill as limits.
+  const exitPrice =
+    exitReason === "take_profit" ? rawExitPrice : rawExitPrice * (1 - (sign * config.slippagePct) / 100);
+  const fees = ((pos.entryPrice + exitPrice) * config.feePct) / 100;
+  const pnl = sign * (exitPrice - pos.entryPrice) - fees;
   const risk = Math.abs(pos.entryPrice - pos.stopLoss);
   return {
     direction: pos.direction,
@@ -109,17 +125,14 @@ function closeTrade(pos: OpenPosition, exitPrice: number, exitTime: number, exit
   };
 }
 
-export function runBacktest(
-  symbol: string,
-  tf: Timeframe,
+function simulate(
   candles: Candle[],
-  htfCandles: Candle[] | undefined,
-  htf: Timeframe | undefined,
   config: BacktestConfig,
-): BacktestResult {
+  minScore: number,
+  getSignal: (i: number) => Opportunity | null,
+): BacktestTrade[] {
   const trades: BacktestTrade[] = [];
   let pos: OpenPosition | null = null;
-  let htfEnd = 0;
 
   const start = Math.min(MIN_HISTORY, candles.length);
   for (let i = start; i < candles.length; i++) {
@@ -130,31 +143,25 @@ export function runBacktest(
       const hitTarget = pos.direction === "long" ? bar.high >= pos.takeProfit : bar.low <= pos.takeProfit;
       if (hitStop) {
         // Conservative: when a bar touches both stop and target, count the stop.
-        trades.push(closeTrade(pos, pos.stopLoss, bar.time, "stop_loss", i));
+        trades.push(closeTrade(pos, pos.stopLoss, bar.time, "stop_loss", i, config));
         pos = null;
       } else if (hitTarget) {
-        trades.push(closeTrade(pos, pos.takeProfit, bar.time, "take_profit", i));
+        trades.push(closeTrade(pos, pos.takeProfit, bar.time, "take_profit", i, config));
         pos = null;
       } else if (i - pos.entryIndex >= config.maxHoldBars) {
-        trades.push(closeTrade(pos, bar.close, bar.time, "time_exit", i));
+        trades.push(closeTrade(pos, bar.close, bar.time, "time_exit", i, config));
         pos = null;
       }
       continue;
     }
 
-    const window = candles.slice(Math.max(0, i + 1 - WINDOW), i + 1);
-    let htfWindow: Candle[] | undefined;
-    if (htfCandles && htfCandles.length > 0) {
-      while (htfEnd < htfCandles.length && htfCandles[htfEnd].time <= bar.time) htfEnd++;
-      htfWindow = htfCandles.slice(Math.max(0, htfEnd - WINDOW), htfEnd);
-    }
-
-    const signal = signalAt(symbol, tf, window, htfWindow, htf, config);
-    if (signal) {
+    const signal = getSignal(i);
+    if (signal && signal.score >= minScore) {
+      const sign = signal.direction === "long" ? 1 : -1;
       pos = {
         direction: signal.direction,
         entryTime: bar.time,
-        entryPrice: bar.close,
+        entryPrice: bar.close * (1 + (sign * config.slippagePct) / 100),
         stopLoss: signal.stopLoss,
         takeProfit: signal.takeProfit,
         score: signal.score,
@@ -165,9 +172,13 @@ export function runBacktest(
 
   if (pos) {
     const lastBar = candles[candles.length - 1];
-    trades.push(closeTrade(pos, lastBar.close, lastBar.time, "end_of_data", candles.length - 1));
+    trades.push(closeTrade(pos, lastBar.close, lastBar.time, "end_of_data", candles.length - 1, config));
   }
+  return trades;
+}
 
+function summarize(symbol: string, tf: Timeframe, candles: Candle[], trades: BacktestTrade[]): BacktestResult {
+  const start = Math.min(MIN_HISTORY, candles.length);
   const rs = trades.map((t) => t.rMultiple);
   const wins = trades.filter((t) => t.rMultiple > 0);
   const losses = trades.filter((t) => t.rMultiple <= 0);
@@ -204,4 +215,87 @@ export function runBacktest(
     avgHoldBars: trades.length > 0 ? trades.reduce((s, t) => s + t.holdBars, 0) / trades.length : null,
     equityCurve,
   };
+}
+
+/** Builds a per-bar signal function; must be called with increasing bar indices. */
+function makeSignalFn(
+  symbol: string,
+  tf: Timeframe,
+  candles: Candle[],
+  htfCandles: Candle[] | undefined,
+  htf: Timeframe | undefined,
+  config: BacktestConfig,
+  minScore: number,
+): (i: number) => Opportunity | null {
+  let htfEnd = 0;
+  return (i: number) => {
+    const bar = candles[i];
+    const window = candles.slice(Math.max(0, i + 1 - WINDOW), i + 1);
+    let htfWindow: Candle[] | undefined;
+    if (htfCandles && htfCandles.length > 0) {
+      while (htfEnd < htfCandles.length && htfCandles[htfEnd].time <= bar.time) htfEnd++;
+      htfWindow = htfCandles.slice(Math.max(0, htfEnd - WINDOW), htfEnd);
+    }
+    return signalAt(symbol, tf, window, htfWindow, htf, config, minScore);
+  };
+}
+
+export function runBacktest(
+  symbol: string,
+  tf: Timeframe,
+  candles: Candle[],
+  htfCandles: Candle[] | undefined,
+  htf: Timeframe | undefined,
+  config: BacktestConfig,
+): BacktestResult {
+  // Custom strategies apply their own minScore inside evaluation.
+  const minScore = config.strategyType === "custom" ? 0 : config.minScore;
+  const getSignal = makeSignalFn(symbol, tf, candles, htfCandles, htf, config, minScore);
+  const trades = simulate(candles, config, minScore, getSignal);
+  return summarize(symbol, tf, candles, trades);
+}
+
+export interface SweepPoint {
+  minScore: number;
+  totalTrades: number;
+  winRate: number | null;
+  expectancyR: number | null;
+  totalR: number;
+  profitFactor: number | null;
+  maxDrawdownR: number;
+}
+
+/**
+ * Parameter sweep over the built-in confluence min-score threshold. Signals
+ * are computed once per bar (at the lowest threshold) and each threshold is
+ * then simulated cheaply against the precomputed signals.
+ */
+export function runBacktestSweep(
+  symbol: string,
+  tf: Timeframe,
+  candles: Candle[],
+  htfCandles: Candle[] | undefined,
+  htf: Timeframe | undefined,
+  config: BacktestConfig,
+  thresholds: number[],
+): SweepPoint[] {
+  const floor = Math.min(...thresholds);
+  const getSignal = makeSignalFn(symbol, tf, candles, htfCandles, htf, config, floor);
+  const start = Math.min(MIN_HISTORY, candles.length);
+  const signals: (Opportunity | null)[] = new Array(candles.length).fill(null);
+  for (let i = start; i < candles.length; i++) signals[i] = getSignal(i);
+
+  return thresholds.map((minScore) => {
+    const trades = simulate(candles, config, minScore, (i) => signals[i]);
+    const r = summarize(symbol, tf, candles, trades);
+    return {
+      minScore,
+      totalTrades: r.totalTrades,
+      winRate: r.winRate,
+      expectancyR: r.expectancyR,
+      totalR: r.totalR,
+      profitFactor: r.profitFactor,
+      maxDrawdownR: r.maxDrawdownR,
+    };
+  });
 }

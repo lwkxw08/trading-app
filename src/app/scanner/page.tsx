@@ -1,9 +1,11 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import OpportunityCard from "@/components/OpportunityCard";
 import { apiUrl } from "@/components/api";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
+import { captureSignals, loadSignals, saveSignals } from "@/lib/signals/store";
 import type { Opportunity } from "@/lib/strategies/types";
 
 export default function Scanner() {
@@ -14,20 +16,30 @@ export default function Scanner() {
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [meta, setMeta] = useState<{ scanned: number; errors: number } | null>(null);
   const [loading, setLoading] = useState(false);
+  const [track, setTrack] = useState(true);
+  const [tracked, setTracked] = useState<number | null>(null);
 
   const scan = useCallback(() => {
     setLoading(true);
+    setTracked(null);
     const params = new URLSearchParams({ tf });
     if (symbols.trim()) params.set("symbols", symbols.trim());
     fetch(apiUrl(`/api/scan?${params}`))
       .then((r) => r.json())
       .then((d) => {
-        setOpportunities(d.opportunities ?? []);
+        const opps: Opportunity[] = d.opportunities ?? [];
+        setOpportunities(opps);
         setMeta({ scanned: d.scanned ?? 0, errors: d.errors ?? 0 });
+        if (track) {
+          const qualifying = opps.filter((o) => o.score >= minScore && (direction === "all" || o.direction === direction));
+          const { signals, added } = captureSignals(loadSignals(), qualifying, "Built-in confluence");
+          if (added > 0) saveSignals(signals);
+          setTracked(added);
+        }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [tf, symbols]);
+  }, [tf, symbols, track, minScore, direction]);
 
   useEffect(() => {
     scan();
@@ -90,6 +102,10 @@ export default function Scanner() {
             className="mt-2 block w-32"
           />
         </label>
+        <label className="flex cursor-pointer items-center gap-2 pb-1.5 text-sm">
+          <input type="checkbox" checked={track} onChange={(e) => setTrack(e.target.checked)} className="accent-[var(--accent)]" />
+          <span className="text-xs text-muted">Track signals</span>
+        </label>
         <button
           onClick={scan}
           disabled={loading}
@@ -103,6 +119,11 @@ export default function Scanner() {
         <p className="text-xs text-muted">
           Scanned {meta.scanned} instruments{meta.errors > 0 ? ` (${meta.errors} failed)` : ""} · {filtered.length} setups
           shown
+          {tracked !== null && (
+            <>
+              {" "}· {tracked} new signal{tracked === 1 ? "" : "s"} logged to <Link href="/signals" className="underline hover:text-foreground">Signal Tracking</Link>
+            </>
+          )}
         </p>
       )}
 

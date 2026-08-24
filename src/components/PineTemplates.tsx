@@ -4,7 +4,8 @@ import { useCallback, useState } from "react";
 import { apiUrl } from "@/components/api";
 import { PINE_TEMPLATES, type PineStrategyKind } from "@/lib/pine/templates";
 
-export default function IndicatorStudio() {
+/** Pre-built Pine indicator presets (formerly the Indicator Studio page). */
+export default function PineTemplates() {
   const [kind, setKind] = useState<PineStrategyKind>("ema_cross");
   const [name, setName] = useState("My Signal Indicator");
   const [fastLength, setFastLength] = useState(20);
@@ -57,15 +58,15 @@ export default function IndicatorStudio() {
   }, [script]);
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-bold">Indicator Studio</h1>
-      <p className="text-sm text-muted">
-        Generate a complete TradingView Pine Script v6 indicator with buy/sell signals, alerts, and a position-size /
-        SL / TP table. Paste the output into TradingView&apos;s Pine Editor and click &quot;Add to chart&quot;.
+    <section className="rounded-lg border border-edge bg-surface p-4">
+      <h2 className="font-semibold">Starter Pine templates</h2>
+      <p className="mt-1 text-xs text-muted">
+        One-click pre-built indicators — pick a template, tune it, and paste the generated Pine v6 script into
+        TradingView&apos;s Pine Editor. Each includes buy/sell signals, alerts, and a position-size / SL / TP table.
       </p>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="space-y-4 rounded-lg border border-edge bg-surface p-4">
+      <div className="mt-3 grid gap-4 lg:grid-cols-2">
+        <div className="space-y-4">
           <div className="grid grid-cols-2 gap-2">
             {PINE_TEMPLATES.map((t) => (
               <button
@@ -119,7 +120,7 @@ export default function IndicatorStudio() {
           {error && <p className="text-sm text-bear">{error}</p>}
         </div>
 
-        <div className="rounded-lg border border-edge bg-surface">
+        <div className="rounded-lg border border-edge bg-background">
           <div className="flex items-center justify-between border-b border-edge px-4 py-2">
             <span className="text-xs font-semibold uppercase text-muted">Pine Script v6</span>
             <button
@@ -130,12 +131,12 @@ export default function IndicatorStudio() {
               {copied ? "Copied!" : "Copy"}
             </button>
           </div>
-          <pre className="max-h-[560px] overflow-auto p-4 font-mono text-xs leading-relaxed">
+          <pre className="max-h-[480px] overflow-auto p-4 font-mono text-xs leading-relaxed">
             {script ?? "// Generated script will appear here"}
           </pre>
         </div>
       </div>
-    </div>
+    </section>
   );
 }
 
