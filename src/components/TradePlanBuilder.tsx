@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { loadTrades, saveTrades } from "@/lib/journal/store";
+import type { JournalTrade, MarketSnapshot } from "@/lib/journal/types";
+import type { Timeframe } from "@/lib/market/types";
 import { calculatePosition, takeProfitLadder } from "@/lib/risk/position";
 import { fmtPrice } from "./format";
 
@@ -10,7 +14,14 @@ interface Defaults {
   takeProfit: number;
 }
 
-export default function TradePlanBuilder({ defaults }: { defaults?: Defaults }) {
+export interface JournalContext {
+  symbol: string;
+  timeframe: Timeframe;
+  strategyName?: string;
+  snapshot?: MarketSnapshot | null;
+}
+
+export default function TradePlanBuilder({ defaults, journal }: { defaults?: Defaults; journal?: JournalContext }) {
   const [accountSize, setAccountSize] = useState(10000);
   const [riskPercent, setRiskPercent] = useState(1);
   const [leverage, setLeverage] = useState(1);
@@ -18,11 +29,14 @@ export default function TradePlanBuilder({ defaults }: { defaults?: Defaults }) 
   const [stopLoss, setStopLoss] = useState(defaults?.stopLoss ?? 0);
   const [takeProfit, setTakeProfit] = useState(defaults?.takeProfit ?? 0);
 
+  const [logged, setLogged] = useState(false);
+
   useEffect(() => {
     if (defaults) {
       setEntry(defaults.entry);
       setStopLoss(defaults.stopLoss);
       setTakeProfit(defaults.takeProfit);
+      setLogged(false);
     }
   }, [defaults]);
 
@@ -36,6 +50,30 @@ export default function TradePlanBuilder({ defaults }: { defaults?: Defaults }) 
     }
     return null;
   }, [accountSize, riskPercent, entry, stopLoss, takeProfit, leverage]);
+
+  const logToJournal = useCallback(() => {
+    if (!plan || !journal) return;
+    const trade: JournalTrade = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      symbol: journal.symbol.toUpperCase(),
+      timeframe: journal.timeframe,
+      direction: plan.direction,
+      status: "open",
+      entryPrice: entry,
+      entryTime: Date.now(),
+      size: plan.positionSize,
+      stopLoss,
+      takeProfit,
+      strategyName: journal.strategyName ?? "",
+      notes: "Logged from Trade Plan Builder",
+      snapshot: journal.snapshot ?? null,
+      exitPrice: null,
+      exitTime: null,
+      exitNotes: "",
+    };
+    saveTrades([trade, ...loadTrades()]);
+    setLogged(true);
+  }, [plan, journal, entry, stopLoss, takeProfit]);
 
   const ladder = useMemo(
     () => (entry > 0 && stopLoss > 0 && entry !== stopLoss ? takeProfitLadder(entry, stopLoss) : []),
@@ -66,6 +104,22 @@ export default function TradePlanBuilder({ defaults }: { defaults?: Defaults }) 
           {ladder.length > 0 && (
             <div className="pt-1 text-xs text-muted">
               TP ladder: {ladder.map((l) => `${l.r}R ${fmtPrice(l.price)}`).join(" · ")}
+            </div>
+          )}
+          {journal && (
+            <div className="flex items-center gap-3 pt-2">
+              <button
+                onClick={logToJournal}
+                disabled={logged}
+                className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {logged ? "Logged to Journal" : "Log to Journal"}
+              </button>
+              {logged && (
+                <Link href="/journal" className="text-xs text-accent hover:underline">
+                  View in Journal
+                </Link>
+              )}
             </div>
           )}
         </div>

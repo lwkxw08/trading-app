@@ -237,6 +237,20 @@ export default function AnalyzeSymbol() {
                   ? { entry: analysis.lastPrice, stopLoss: analysis.lastPrice * 0.98, takeProfit: analysis.lastPrice * 1.04 }
                   : undefined
             }
+            journal={{
+              symbol,
+              timeframe: tf,
+              strategyName: selectedOpp ? "Built-in confluence" : "",
+              snapshot: analysis
+                ? {
+                    trendDirection: analysis.trend.direction,
+                    htfDirection: analysis.higherTimeframeTrend?.direction,
+                    rsi14: analysis.trend.rsi14,
+                    confluenceScore: selectedOpp?.score ?? null,
+                    factors: selectedOpp?.factors ?? [],
+                  }
+                : null,
+            }}
           />
         </div>
       </div>
