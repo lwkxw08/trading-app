@@ -7,7 +7,7 @@ import { apiUrl } from "@/components/api";
 import { fmtCompact, fmtPct, fmtPrice, fmtTime } from "@/components/format";
 import type { DailyBriefing } from "@/lib/ai/analyze";
 import type { EconomicEvent } from "@/lib/calendar/types";
-import type { Ticker } from "@/lib/market/types";
+import { TIMEFRAMES, type Ticker, type Timeframe } from "@/lib/market/types";
 import type { Opportunity } from "@/lib/strategies/types";
 
 export default function CommandCenter() {
@@ -18,17 +18,13 @@ export default function CommandCenter() {
   const [briefingError, setBriefingError] = useState<string | null>(null);
   const [briefingLoading, setBriefingLoading] = useState(false);
   const [scanLoading, setScanLoading] = useState(true);
+  const [tf, setTf] = useState<Timeframe>("4h");
 
   useEffect(() => {
     fetch(apiUrl("/api/tickers"))
       .then((r) => r.json())
       .then((d) => setTickers(d.tickers ?? []))
       .catch(() => {});
-    fetch(apiUrl("/api/scan?tf=4h"))
-      .then((r) => r.json())
-      .then((d) => setOpportunities(d.opportunities ?? []))
-      .catch(() => {})
-      .finally(() => setScanLoading(false));
     fetch(apiUrl("/api/calendar"))
       .then((r) => r.json())
       .then((d) => {
@@ -42,10 +38,19 @@ export default function CommandCenter() {
       .catch(() => {});
   }, []);
 
+  useEffect(() => {
+    setScanLoading(true);
+    fetch(apiUrl(`/api/scan?tf=${tf}`))
+      .then((r) => r.json())
+      .then((d) => setOpportunities(d.opportunities ?? []))
+      .catch(() => {})
+      .finally(() => setScanLoading(false));
+  }, [tf]);
+
   const loadBriefing = useCallback(() => {
     setBriefingLoading(true);
     setBriefingError(null);
-    fetch(apiUrl("/api/ai/briefing"))
+    fetch(apiUrl(`/api/ai/briefing?tf=${tf}`))
       .then(async (r) => {
         const d = await r.json();
         if (!r.ok) throw new Error(d.error ?? "briefing failed");
@@ -53,7 +58,7 @@ export default function CommandCenter() {
       })
       .catch((e) => setBriefingError(e.message))
       .finally(() => setBriefingLoading(false));
-  }, []);
+  }, [tf]);
 
   return (
     <div className="space-y-6">
@@ -78,8 +83,21 @@ export default function CommandCenter() {
         <div className="space-y-6 lg:col-span-2">
           {/* AI briefing */}
           <section className="rounded-lg border border-edge bg-surface p-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h2 className="font-semibold">AI Daily Briefing</h2>
+              <div className="flex items-center gap-1">
+                {TIMEFRAMES.map((t) => (
+                  <button
+                    key={t}
+                    onClick={() => setTf(t)}
+                    className={`rounded px-2 py-1 text-xs font-semibold ${
+                      t === tf ? "bg-accent text-white" : "bg-background text-muted hover:text-foreground"
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
               <button
                 onClick={loadBriefing}
                 disabled={briefingLoading}
@@ -117,7 +135,7 @@ export default function CommandCenter() {
           {/* Top opportunities */}
           <section>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="font-semibold">Top Opportunities (4h scan)</h2>
+              <h2 className="font-semibold">Top Opportunities ({tf} scan)</h2>
               <Link href="/scanner" className="text-xs text-accent hover:underline">
                 Open scanner →
               </Link>

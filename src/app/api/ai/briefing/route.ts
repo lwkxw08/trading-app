@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { generateBriefing, isAiConfigured } from "@/lib/ai/analyze";
+import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { getEconomicCalendar } from "@/lib/calendar/economic";
 import { DEFAULT_CRYPTO_UNIVERSE } from "@/lib/market/binance";
 import { getProviderForSymbol } from "@/lib/market/registry";
@@ -9,14 +10,15 @@ import type { Opportunity } from "@/lib/strategies/types";
 
 export const runtime = "edge";
 
-export async function GET() {
+export async function GET(req: Request) {
   if (!isAiConfigured()) {
     return NextResponse.json({ error: "AI not configured: set ANTHROPIC_API_KEY" }, { status: 503 });
   }
   try {
     const symbols = DEFAULT_CRYPTO_UNIVERSE.slice(0, 6).map((c) => c.symbol);
     const provider = getProviderForSymbol(symbols[0]);
-    const tf = "4h" as const;
+    const tfParam = new URL(req.url).searchParams.get("tf");
+    const tf: Timeframe = TIMEFRAMES.includes(tfParam as Timeframe) ? (tfParam as Timeframe) : "4h";
     const htf = higherTimeframe(tf);
     const [tickers, events] = await Promise.all([provider.getTickers(symbols), getEconomicCalendar()]);
 
