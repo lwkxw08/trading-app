@@ -83,7 +83,53 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
     factors.push({ name: "MACD", detail: "Histogram supports direction", weight: 6 });
   }
 
-  // 8. Macro risk window: penalize when high-impact events are near
+  // 8. Liquidity sweep: recent stop hunt in our direction (reversal fuel)
+  const recentBars = a.candles.length - 1;
+  const recentSweeps = a.liquiditySweeps.filter(
+    (s) => s.direction === (wantBullish ? "bullish" : "bearish") && recentBars - s.index <= 10,
+  );
+  if (recentSweeps.length > 0) {
+    const s = recentSweeps[recentSweeps.length - 1];
+    factors.push({ name: "Liquidity Sweep", detail: `Swept ${wantBullish ? "lows" : "highs"} at ${s.sweptLevel.toFixed(2)} and reclaimed within last 10 bars`, weight: 16 });
+  }
+
+  // 9. Market structure: latest BOS/CHoCH direction
+  const lastBreak = a.structureBreaks[a.structureBreaks.length - 1];
+  if (lastBreak) {
+    const agrees = lastBreak.direction === (wantBullish ? "bullish" : "bearish");
+    if (agrees && lastBreak.type === "choch") {
+      factors.push({ name: "CHoCH", detail: `Change of character ${lastBreak.direction} through ${lastBreak.brokenLevel.toFixed(2)} — early reversal signal`, weight: 14 });
+    } else if (agrees) {
+      factors.push({ name: "BOS", detail: `Break of structure ${lastBreak.direction} through ${lastBreak.brokenLevel.toFixed(2)} — continuation`, weight: 10 });
+    } else {
+      factors.push({ name: "Structure Conflict", detail: `Latest ${lastBreak.type.toUpperCase()} is ${lastBreak.direction} — against this direction`, weight: -10 });
+    }
+  }
+
+  // 10. Anchored VWAP positioning
+  const avwap = a.anchoredVwap;
+  if (avwap) {
+    const above = price > avwap.value;
+    if ((wantBullish && above) || (!wantBullish && !above)) {
+      const nearVwap = Math.abs(price - avwap.value) <= near;
+      factors.push({
+        name: "Anchored VWAP",
+        detail: `Price ${above ? "above" : "below"} AVWAP (${avwap.value.toFixed(2)}, anchored at ${avwap.anchorType.replace("_", " ")})${nearVwap ? " — retest zone" : ""}`,
+        weight: nearVwap ? 10 : 6,
+      });
+    }
+  }
+
+  // 11. Session level reaction: price near a prior session high/low
+  for (const s of a.sessionLevels.sessions) {
+    const level = wantBullish ? s.low : s.high;
+    if (Math.abs(price - level) <= near * 0.5) {
+      factors.push({ name: "Session Level", detail: `Price at ${s.name} session ${wantBullish ? "low" : "high"} (${level.toFixed(2)}) — liquidity pool / reaction level`, weight: 8 });
+      break;
+    }
+  }
+
+  // 12. Macro risk window: penalize when high-impact events are near
   const soon = Date.now() + 12 * 3600 * 1000;
   const riskyEvents = events.filter((e) => e.impact === "high" && e.timestamp * 1000 > Date.now() && e.timestamp * 1000 < soon);
   if (riskyEvents.length > 0) {
@@ -91,35 +137,15 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
   }
 
   // Require at least one structural reason to exist
-  const structural = factors.some((f) => ["Fair Value Gap", "Order Block", "Volume Profile"].includes(f.name) && f.weight > 0);
+  const structural = factors.some(
+    (f) => ["Fair Value Gap", "Order Block", "Volume Profile", "Liquidity Sweep", "CHoCH", "BOS"].includes(f.name) && f.weight > 0,
+  );
   if (!structural) return null;
 
   const raw = 30 + factors.reduce((s, f) => s + f.weight, 0);
   const score = Math.max(0, Math.min(100, Math.round(raw)));
 
-  // Entry/SL/TP from structure: stop beyond the zone or recent swing, TP at
-  // opposing structure or 2R fallback.
-  const entry = price;
-  const stopDistance = 1.5 * atrVal;
-  const recentSwings = a.swings.slice(-10);
-  const swingLow = recentSwings.filter((s) => s.type === "low" && s.price < price).map((s) => s.price).sort((x, y) => y - x)[0];
-  const swingHigh = recentSwings.filter((s) => s.type === "high" && s.price > price).map((s) => s.price).sort((x, y) => x - y)[0];
-
-  let stopLoss: number;
-  let takeProfit: number;
-  if (wantBullish) {
-    stopLoss = swingLow !== undefined ? Math.min(swingLow - 0.25 * atrVal, entry - 0.5 * atrVal) : entry - stopDistance;
-    const target = swingHigh !== undefined && swingHigh > entry + (entry - stopLoss) ? swingHigh : entry + 2 * (entry - stopLoss);
-    takeProfit = target;
-  } else {
-    stopLoss = swingHigh !== undefined ? Math.max(swingHigh + 0.25 * atrVal, entry + 0.5 * atrVal) : entry + stopDistance;
-    const target = swingLow !== undefined && swingLow < entry - (stopLoss - entry) ? swingLow : entry - 2 * (stopLoss - entry);
-    takeProfit = target;
-  }
-
-  const risk = Math.abs(entry - stopLoss);
-  const reward = Math.abs(takeProfit - entry);
-  const riskRewardRatio = risk > 0 ? reward / risk : 0;
+  const { entry, stopLoss, takeProfit, riskRewardRatio } = buildTradeLevels(a, direction);
 
   return {
     symbol: a.symbol,
@@ -133,4 +159,37 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
     riskRewardRatio,
     generatedAt: Date.now(),
   };
+}
+
+/**
+ * Entry/SL/TP from structure: stop beyond the recent swing (or ATR fallback),
+ * TP at opposing structure or 2R fallback. Shared by built-in confluence
+ * scoring and custom strategy evaluation.
+ */
+export function buildTradeLevels(
+  a: StrategyAnalysis,
+  direction: "long" | "short",
+): { entry: number; stopLoss: number; takeProfit: number; riskRewardRatio: number } {
+  const price = a.lastPrice;
+  const atrVal = a.trend.atr14 ?? price * 0.01;
+  const wantBullish = direction === "long";
+  const entry = price;
+  const stopDistance = 1.5 * atrVal;
+  const recentSwings = a.swings.slice(-10);
+  const swingLow = recentSwings.filter((s) => s.type === "low" && s.price < price).map((s) => s.price).sort((x, y) => y - x)[0];
+  const swingHigh = recentSwings.filter((s) => s.type === "high" && s.price > price).map((s) => s.price).sort((x, y) => x - y)[0];
+
+  let stopLoss: number;
+  let takeProfit: number;
+  if (wantBullish) {
+    stopLoss = swingLow !== undefined ? Math.min(swingLow - 0.25 * atrVal, entry - 0.5 * atrVal) : entry - stopDistance;
+    takeProfit = swingHigh !== undefined && swingHigh > entry + (entry - stopLoss) ? swingHigh : entry + 2 * (entry - stopLoss);
+  } else {
+    stopLoss = swingHigh !== undefined ? Math.max(swingHigh + 0.25 * atrVal, entry + 0.5 * atrVal) : entry + stopDistance;
+    takeProfit = swingLow !== undefined && swingLow < entry - (stopLoss - entry) ? swingLow : entry - 2 * (stopLoss - entry);
+  }
+
+  const risk = Math.abs(entry - stopLoss);
+  const reward = Math.abs(takeProfit - entry);
+  return { entry, stopLoss, takeProfit, riskRewardRatio: risk > 0 ? reward / risk : 0 };
 }

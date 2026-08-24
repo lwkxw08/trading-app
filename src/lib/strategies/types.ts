@@ -46,6 +46,43 @@ export interface VolumeProfile {
   bins: VolumeProfileLevel[];
 }
 
+export interface LiquiditySweep {
+  kind: "liquidity_sweep";
+  direction: Direction; // bullish = swept lows and reclaimed, bearish = swept highs and rejected
+  sweptLevel: number;
+  extreme: number; // the wick extreme of the sweep candle
+  index: number;
+  time: number;
+}
+
+export interface StructureBreak {
+  kind: "structure_break";
+  type: "bos" | "choch";
+  direction: Direction; // direction of the break
+  brokenLevel: number;
+  index: number;
+  time: number;
+}
+
+export interface AnchoredVwap {
+  kind: "anchored_vwap";
+  anchorType: "swing_low" | "swing_high" | "range_start";
+  anchorTime: number;
+  value: number; // current AVWAP value
+  series: (number | null)[];
+}
+
+export interface SessionLevels {
+  kind: "session_levels";
+  sessions: {
+    name: "asia" | "london" | "newyork";
+    high: number;
+    low: number;
+    startTime: number;
+    endTime: number;
+  }[];
+}
+
 export interface TrendState {
   timeframe: Timeframe;
   direction: "up" | "down" | "sideways";
@@ -66,6 +103,10 @@ export interface StrategyAnalysis {
   orderBlocks: OrderBlock[];
   swings: SwingPoint[];
   volumeProfile: VolumeProfile;
+  liquiditySweeps: LiquiditySweep[];
+  structureBreaks: StructureBreak[];
+  anchoredVwap: AnchoredVwap | null;
+  sessionLevels: SessionLevels;
   trend: TrendState;
   higherTimeframeTrend?: TrendState;
 }

@@ -1,5 +1,15 @@
 import type { Candle } from "@/lib/market/types";
-import type { FairValueGap, OrderBlock, SwingPoint, VolumeProfile, VolumeProfileLevel } from "./types";
+import type {
+  AnchoredVwap,
+  FairValueGap,
+  LiquiditySweep,
+  OrderBlock,
+  SessionLevels,
+  StructureBreak,
+  SwingPoint,
+  VolumeProfile,
+  VolumeProfileLevel,
+} from "./types";
 
 /**
  * Fair Value Gaps: a 3-candle imbalance where candle 1's high < candle 3's low
@@ -147,4 +157,141 @@ export function computeVolumeProfile(candles: Candle[], binCount = 50): VolumePr
     val: lo + lowIdx * binSize,
     bins,
   };
+}
+
+/**
+ * Liquidity sweeps: a candle wicks beyond a prior swing high/low (taking the
+ * resting liquidity) but closes back inside — a stop hunt / failed breakout.
+ */
+export function detectLiquiditySweeps(candles: Candle[], swings: SwingPoint[]): LiquiditySweep[] {
+  const sweeps: LiquiditySweep[] = [];
+  for (const swing of swings) {
+    for (let i = swing.index + 1; i < candles.length; i++) {
+      const c = candles[i];
+      if (swing.type === "low" && c.low < swing.price && c.close > swing.price) {
+        sweeps.push({ kind: "liquidity_sweep", direction: "bullish", sweptLevel: swing.price, extreme: c.low, index: i, time: c.time });
+        break;
+      }
+      if (swing.type === "high" && c.high > swing.price && c.close < swing.price) {
+        sweeps.push({ kind: "liquidity_sweep", direction: "bearish", sweptLevel: swing.price, extreme: c.high, index: i, time: c.time });
+        break;
+      }
+      // once price closes through the level, the liquidity is gone — no sweep
+      if (swing.type === "low" && c.close < swing.price) break;
+      if (swing.type === "high" && c.close > swing.price) break;
+    }
+  }
+  return sweeps.sort((a, b) => a.index - b.index);
+}
+
+/**
+ * Break of Structure (BOS) and Change of Character (CHoCH) from the swing
+ * sequence: a close beyond the latest swing high/low is a BOS when it continues
+ * the prevailing structure and a CHoCH when it is the first break against it.
+ */
+export function detectStructureBreaks(candles: Candle[], swings: SwingPoint[]): StructureBreak[] {
+  const breaks: StructureBreak[] = [];
+  let lastHigh: SwingPoint | null = null;
+  let lastLow: SwingPoint | null = null;
+  let bias: "bullish" | "bearish" | null = null;
+
+  const events: { index: number; swing: SwingPoint }[] = swings.map((s) => ({ index: s.index, swing: s }));
+  events.sort((a, b) => a.index - b.index);
+
+  let ev = 0;
+  for (let i = 0; i < candles.length; i++) {
+    while (ev < events.length && events[ev].index <= i - 1) {
+      const s = events[ev].swing;
+      if (s.type === "high") lastHigh = s;
+      else lastLow = s;
+      ev++;
+    }
+    const c = candles[i];
+    if (lastHigh && c.close > lastHigh.price && i > lastHigh.index) {
+      const type = bias === "bearish" ? "choch" : "bos";
+      breaks.push({ kind: "structure_break", type, direction: "bullish", brokenLevel: lastHigh.price, index: i, time: c.time });
+      bias = "bullish";
+      lastHigh = null;
+    } else if (lastLow && c.close < lastLow.price && i > lastLow.index) {
+      const type = bias === "bullish" ? "choch" : "bos";
+      breaks.push({ kind: "structure_break", type, direction: "bearish", brokenLevel: lastLow.price, index: i, time: c.time });
+      bias = "bearish";
+      lastLow = null;
+    }
+  }
+  return breaks;
+}
+
+/**
+ * Anchored VWAP from the most recent significant swing (the last swing low for
+ * a rising market, last swing high for a falling one), falling back to the
+ * start of the window.
+ */
+export function computeAnchoredVwap(candles: Candle[], swings: SwingPoint[]): AnchoredVwap | null {
+  if (candles.length === 0) return null;
+  const lastPrice = candles[candles.length - 1].close;
+  const recent = swings.slice(-8);
+  const lows = recent.filter((s) => s.type === "low");
+  const highs = recent.filter((s) => s.type === "high");
+  let anchorIndex = 0;
+  let anchorType: AnchoredVwap["anchorType"] = "range_start";
+  const lastLow = lows[lows.length - 1];
+  const lastHigh = highs[highs.length - 1];
+  if (lastLow && lastPrice > lastLow.price && (!lastHigh || lastLow.index >= lastHigh.index)) {
+    anchorIndex = lastLow.index;
+    anchorType = "swing_low";
+  } else if (lastHigh) {
+    anchorIndex = lastHigh.index;
+    anchorType = "swing_high";
+  }
+
+  const series: (number | null)[] = new Array(candles.length).fill(null);
+  let cumPV = 0;
+  let cumV = 0;
+  for (let i = anchorIndex; i < candles.length; i++) {
+    const c = candles[i];
+    const typical = (c.high + c.low + c.close) / 3;
+    cumPV += typical * c.volume;
+    cumV += c.volume;
+    series[i] = cumV > 0 ? cumPV / cumV : typical;
+  }
+  const value = series[candles.length - 1];
+  if (value === null) return null;
+  return { kind: "anchored_vwap", anchorType, anchorTime: candles[anchorIndex].time, value, series };
+}
+
+const SESSION_WINDOWS: { name: "asia" | "london" | "newyork"; startHour: number; endHour: number }[] = [
+  { name: "asia", startHour: 0, endHour: 8 },
+  { name: "london", startHour: 7, endHour: 16 },
+  { name: "newyork", startHour: 13, endHour: 21 },
+];
+
+/**
+ * Session highs/lows (UTC windows) for the most recent completed or in-progress
+ * occurrence of each session. Prior-session extremes act as intraday
+ * support/resistance and liquidity pools.
+ */
+export function computeSessionLevels(candles: Candle[]): SessionLevels {
+  const sessions: SessionLevels["sessions"] = [];
+  for (const w of SESSION_WINDOWS) {
+    let best: { high: number; low: number; startTime: number; endTime: number } | null = null;
+    let current: { high: number; low: number; startTime: number; endTime: number } | null = null;
+    for (const c of candles) {
+      const hour = new Date(c.time * 1000).getUTCHours();
+      const inSession = hour >= w.startHour && hour < w.endHour;
+      if (inSession) {
+        if (current === null || c.time - current.endTime > 3600 * 4) {
+          if (current) best = current;
+          current = { high: c.high, low: c.low, startTime: c.time, endTime: c.time };
+        } else {
+          current.high = Math.max(current.high, c.high);
+          current.low = Math.min(current.low, c.low);
+          current.endTime = c.time;
+        }
+      }
+    }
+    const latest = current ?? best;
+    if (latest) sessions.push({ name: w.name, ...latest });
+  }
+  return { kind: "session_levels", sessions };
 }

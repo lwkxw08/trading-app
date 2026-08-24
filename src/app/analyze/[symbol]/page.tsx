@@ -82,6 +82,13 @@ export default function AnalyzeSymbol() {
       const color = b.direction === "bullish" ? "#14b8a6" : "#f97316";
       out.push({ price: b.direction === "bullish" ? b.top : b.bottom, color, title: `OB ${b.direction}`, dashed: true });
     }
+    if (analysis.anchoredVwap) {
+      out.push({ price: analysis.anchoredVwap.value, color: "#a855f7", title: "AVWAP", dashed: true });
+    }
+    for (const s of analysis.sessionLevels.sessions) {
+      out.push({ price: s.high, color: "#64748b", title: `${s.name} H`, dashed: true });
+      out.push({ price: s.low, color: "#64748b", title: `${s.name} L`, dashed: true });
+    }
     if (selectedOpp) {
       out.push({ price: selectedOpp.entry, color: "#4f8cff", title: "Entry" });
       out.push({ price: selectedOpp.stopLoss, color: "#ef4444", title: "SL" });
@@ -188,6 +195,25 @@ export default function AnalyzeSymbol() {
               <ul className="space-y-1 text-muted">
                 <li>Unfilled FVGs: {analysis.fvgs.filter((g) => !g.filled).length}</li>
                 <li>Active order blocks: {analysis.orderBlocks.filter((b) => !b.mitigated).length}</li>
+                <li>Liquidity sweeps: {analysis.liquiditySweeps.length}</li>
+                {analysis.structureBreaks.length > 0 && (
+                  <li>
+                    Last structure: {analysis.structureBreaks[analysis.structureBreaks.length - 1].type.toUpperCase()}{" "}
+                    {analysis.structureBreaks[analysis.structureBreaks.length - 1].direction} @{" "}
+                    {fmtPrice(analysis.structureBreaks[analysis.structureBreaks.length - 1].brokenLevel)}
+                  </li>
+                )}
+                {analysis.anchoredVwap && (
+                  <li>
+                    AVWAP ({analysis.anchoredVwap.anchorType.replace("_", " ")}): {fmtPrice(analysis.anchoredVwap.value)}
+                  </li>
+                )}
+                {analysis.sessionLevels.sessions.map((s) => (
+                  <li key={s.name}>
+                    {s.name === "newyork" ? "New York" : s.name.charAt(0).toUpperCase() + s.name.slice(1)} session:{" "}
+                    {fmtPrice(s.low)}–{fmtPrice(s.high)}
+                  </li>
+                ))}
                 <li>
                   Volume profile: POC {fmtPrice(analysis.volumeProfile.poc)} · VA {fmtPrice(analysis.volumeProfile.val)}–
                   {fmtPrice(analysis.volumeProfile.vah)}

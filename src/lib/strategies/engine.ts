@@ -1,6 +1,15 @@
 import { atr, ema, last, macd, rsi } from "@/lib/indicators/core";
 import type { Candle, Timeframe } from "@/lib/market/types";
-import { computeVolumeProfile, detectFairValueGaps, detectOrderBlocks, detectSwings } from "./detectors";
+import {
+  computeAnchoredVwap,
+  computeSessionLevels,
+  computeVolumeProfile,
+  detectFairValueGaps,
+  detectLiquiditySweeps,
+  detectOrderBlocks,
+  detectStructureBreaks,
+  detectSwings,
+} from "./detectors";
 import type { StrategyAnalysis, TrendState } from "./types";
 
 export function computeTrend(candles: Candle[], timeframe: Timeframe): TrendState {
@@ -25,6 +34,7 @@ export function computeTrend(candles: Candle[], timeframe: Timeframe): TrendStat
 export function analyze(symbol: string, timeframe: Timeframe, candles: Candle[], higherTfCandles?: Candle[], higherTf?: Timeframe): StrategyAnalysis {
   const atr14 = atr(candles, 14);
   const profileWindow = candles.slice(-Math.min(candles.length, 200));
+  const swings = detectSwings(candles);
   return {
     symbol,
     timeframe,
@@ -32,8 +42,12 @@ export function analyze(symbol: string, timeframe: Timeframe, candles: Candle[],
     candles,
     fvgs: detectFairValueGaps(candles, 0.15, atr14),
     orderBlocks: detectOrderBlocks(candles, atr14),
-    swings: detectSwings(candles),
+    swings,
     volumeProfile: computeVolumeProfile(profileWindow),
+    liquiditySweeps: detectLiquiditySweeps(candles, swings),
+    structureBreaks: detectStructureBreaks(candles, swings),
+    anchoredVwap: computeAnchoredVwap(candles, swings),
+    sessionLevels: computeSessionLevels(candles.slice(-Math.min(candles.length, 300))),
     trend: computeTrend(candles, timeframe),
     higherTimeframeTrend: higherTfCandles && higherTf ? computeTrend(higherTfCandles, higherTf) : undefined,
   };

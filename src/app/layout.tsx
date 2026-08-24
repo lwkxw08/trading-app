@@ -23,6 +23,7 @@ const NAV = [
   { href: "/", label: "Command Center" },
   { href: "/scanner", label: "Scanner" },
   { href: "/analyze", label: "Analysis" },
+  { href: "/strategies", label: "Strategy Lab" },
   { href: "/indicators", label: "Indicator Studio" },
   { href: "/calendar", label: "Macro Calendar" },
 ];
