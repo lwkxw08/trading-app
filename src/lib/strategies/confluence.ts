@@ -51,6 +51,26 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
     factors.push({ name: "Volume Profile", detail: "Price at POC — high-volume node acting as magnet/pivot", weight: 8 });
   }
 
+  // 3b. High-volume node acting as support (longs) / resistance (shorts)
+  const supportHvn = vp.hvns.find((nd) => (wantBullish ? price >= nd.price && price - nd.price <= near : nd.price >= price && nd.price - price <= near));
+  if (supportHvn) {
+    factors.push({
+      name: "HVN Level",
+      detail: `High-volume node at ${supportHvn.price.toFixed(2)} (${Math.round(supportHvn.strength * 100)}% of peak volume) acting as ${wantBullish ? "support below" : "resistance above"} price`,
+      weight: 12,
+    });
+  }
+
+  // 3c. Low-volume node ahead: thin volume in the trade direction eases the path to target
+  const lvnAhead = vp.lvns.find((nd) => (wantBullish ? nd.price > price && nd.price - price <= 2 * atrVal : nd.price < price && price - nd.price <= 2 * atrVal));
+  if (lvnAhead) {
+    factors.push({
+      name: "LVN Path",
+      detail: `Low-volume node at ${lvnAhead.price.toFixed(2)} ${wantBullish ? "above" : "below"} — thin volume, price tends to traverse it quickly toward target`,
+      weight: 6,
+    });
+  }
+
   // 4. Trend alignment on trading timeframe
   if ((wantBullish && a.trend.direction === "up") || (!wantBullish && a.trend.direction === "down")) {
     factors.push({ name: "Trend Alignment", detail: `${a.timeframe} trend is ${a.trend.direction} (price vs EMA20/50)`, weight: 15 });
@@ -138,7 +158,7 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
 
   // Require at least one structural reason to exist
   const structural = factors.some(
-    (f) => ["Fair Value Gap", "Order Block", "Volume Profile", "Liquidity Sweep", "CHoCH", "BOS"].includes(f.name) && f.weight > 0,
+    (f) => ["Fair Value Gap", "Order Block", "Volume Profile", "HVN Level", "Liquidity Sweep", "CHoCH", "BOS"].includes(f.name) && f.weight > 0,
   );
   if (!structural) return null;
 

@@ -7,6 +7,7 @@ import type {
   SessionLevels,
   StructureBreak,
   SwingPoint,
+  VolumeNode,
   VolumeProfile,
   VolumeProfileLevel,
 } from "./types";
@@ -150,13 +151,67 @@ export function computeVolumeProfile(candles: Candle[], binCount = 50): VolumePr
     }
   }
 
+  const { hvns, lvns } = detectVolumeNodes(bins);
+
   return {
     kind: "volume_profile",
     poc: bins[pocIdx].price,
     vah: lo + (highIdx + 1) * binSize,
     val: lo + lowIdx * binSize,
     bins,
+    hvns,
+    lvns,
+    lookback: candles.length,
+    startTime: candles[0]?.time ?? 0,
   };
+}
+
+/**
+ * High/low-volume nodes from the profile histogram: HVNs are local maxima in
+ * the 3-bin-smoothed profile with meaningfully above-average volume (they act
+ * as support/resistance magnets); LVNs are local minima with well
+ * below-average volume (thin shelves price tends to traverse quickly).
+ */
+function detectVolumeNodes(bins: VolumeProfileLevel[]): { hvns: VolumeNode[]; lvns: VolumeNode[] } {
+  const n = bins.length;
+  if (n < 5) return { hvns: [], lvns: [] };
+  const smoothed = bins.map((_, i) => {
+    const from = Math.max(0, i - 1);
+    const to = Math.min(n - 1, i + 1);
+    let sum = 0;
+    for (let j = from; j <= to; j++) sum += bins[j].volume;
+    return sum / (to - from + 1);
+  });
+  const peak = Math.max(...smoothed);
+  const mean = smoothed.reduce((a, b) => a + b, 0) / n;
+  if (peak <= 0) return { hvns: [], lvns: [] };
+
+  const hvns: VolumeNode[] = [];
+  const lvns: VolumeNode[] = [];
+  for (let i = 1; i < n - 1; i++) {
+    const v = smoothed[i];
+    const isMax = v >= smoothed[i - 1] && v >= smoothed[i + 1];
+    const isMin = v <= smoothed[i - 1] && v <= smoothed[i + 1];
+    if (isMax && v >= mean * 1.3) {
+      hvns.push({ kind: "volume_node", type: "hvn", price: bins[i].price, volume: bins[i].volume, strength: v / peak });
+    } else if (isMin && v <= mean * 0.5) {
+      lvns.push({ kind: "volume_node", type: "lvn", price: bins[i].price, volume: bins[i].volume, strength: v / peak });
+    }
+  }
+
+  // keep the strongest, non-adjacent nodes
+  const dedupe = (nodes: VolumeNode[], byStrongest: boolean, cap: number) => {
+    const sorted = [...nodes].sort((a, b) => (byStrongest ? b.strength - a.strength : a.strength - b.strength));
+    const kept: VolumeNode[] = [];
+    const minGap = ((bins[n - 1].price - bins[0].price) / n) * 3;
+    for (const node of sorted) {
+      if (kept.every((k) => Math.abs(k.price - node.price) >= minGap)) kept.push(node);
+      if (kept.length >= cap) break;
+    }
+    return kept.sort((a, b) => a.price - b.price);
+  };
+
+  return { hvns: dedupe(hvns, true, 5), lvns: dedupe(lvns, false, 4) };
 }
 
 /**

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AiChat from "@/components/AiChat";
 import OpportunityCard, { FavoriteStar } from "@/components/OpportunityCard";
 import { apiUrl } from "@/components/api";
-import PriceChart, { type LevelLine, type ZoneBox } from "@/components/PriceChart";
+import PriceChart, { type LevelLine, type ProfileOverlay, type ZoneBox } from "@/components/PriceChart";
 import TradePlanBuilder from "@/components/TradePlanBuilder";
 import MtfDashboard from "@/components/MtfDashboard";
 import { useLiveKline } from "@/components/useLiveMarket";
@@ -27,6 +27,8 @@ const LAYER_DEFS = [
 ] as const;
 type LayerId = (typeof LAYER_DEFS)[number]["id"];
 
+const VP_BAR_OPTIONS = [50, 100, 200, 500] as const;
+
 export default function AnalyzeSymbol() {
   const params = useParams<{ symbol: string }>();
   const search = useSearchParams();
@@ -44,6 +46,7 @@ export default function AnalyzeSymbol() {
     () => Object.fromEntries(LAYER_DEFS.map((l) => [l.id, true])) as Record<LayerId, boolean>,
   );
   const liveCandle = useLiveKline(symbol, tf);
+  const [vpBars, setVpBars] = useState<number>(200);
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
 
@@ -76,7 +79,7 @@ export default function AnalyzeSymbol() {
         setCandles(d.candles);
       })
       .catch((e) => setError(e.message));
-    fetch(apiUrl(`/api/analysis?symbol=${symbol}&tf=${tf}`))
+    fetch(apiUrl(`/api/analysis?symbol=${symbol}&tf=${tf}&vpBars=${vpBars}`))
       .then(async (r) => {
         const d = await r.json();
         if (!r.ok) throw new Error(d.error ?? "analysis failed");
@@ -85,7 +88,7 @@ export default function AnalyzeSymbol() {
         setSelectedOpp(d.opportunities[0] ?? null);
       })
       .catch((e) => setError(e.message));
-  }, [symbol, tf]);
+  }, [symbol, tf, vpBars]);
 
   const runAi = useCallback(() => {
     setAiLoading(true);
@@ -111,6 +114,13 @@ export default function AnalyzeSymbol() {
       out.push({ price: analysis.volumeProfile.poc, color: "#eab308", title: "POC" });
       out.push({ price: analysis.volumeProfile.vah, color: "#eab30880", title: "VAH", dashed: true });
       out.push({ price: analysis.volumeProfile.val, color: "#eab30880", title: "VAL", dashed: true });
+      for (const nd of analysis.volumeProfile.hvns) {
+        if (Math.abs(nd.price - analysis.volumeProfile.poc) < 1e-9) continue;
+        out.push({ price: nd.price, color: "#f59e0b99", title: "HVN" });
+      }
+      for (const nd of analysis.volumeProfile.lvns) {
+        out.push({ price: nd.price, color: "#64748b99", title: "LVN", dashed: true });
+      }
     }
     if (layers.avwap && analysis.anchoredVwap) {
       out.push({ price: analysis.anchoredVwap.value, color: "#a855f7", title: "AVWAP", dashed: true });
@@ -131,6 +141,12 @@ export default function AnalyzeSymbol() {
     }
     return out;
   }, [analysis, selectedOpp, layers, drawings]);
+
+  const profile = useMemo<ProfileOverlay | null>(() => {
+    if (!analysis || !layers.volumeProfile) return null;
+    const vp = analysis.volumeProfile;
+    return { bins: vp.bins, poc: vp.poc, vah: vp.vah, val: vp.val };
+  }, [analysis, layers.volumeProfile]);
 
   const zones = useMemo<ZoneBox[]>(() => {
     if (!analysis) return [];
@@ -211,6 +227,21 @@ export default function AnalyzeSymbol() {
                 {l.label}
               </label>
             ))}
+            <span className="ml-2 flex items-center gap-1 text-xs text-muted">
+              VP lookback:
+              {VP_BAR_OPTIONS.map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setVpBars(n)}
+                  className={`rounded px-1.5 py-0.5 font-semibold ${
+                    vpBars === n ? "bg-accent text-white" : "bg-background text-muted hover:text-foreground"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+              <span>bars</span>
+            </span>
             <button
               onClick={() =>
                 setLayers(
@@ -253,6 +284,7 @@ export default function AnalyzeSymbol() {
             candles={liveCandles}
             levels={levels}
             zones={zones}
+            profile={profile}
             drawMode={drawMode}
             onPriceClick={onPriceClick}
           />
@@ -342,9 +374,15 @@ export default function AnalyzeSymbol() {
                   </li>
                 ))}
                 <li>
-                  Volume profile: POC {fmtPrice(analysis.volumeProfile.poc)} · VA {fmtPrice(analysis.volumeProfile.val)}–
-                  {fmtPrice(analysis.volumeProfile.vah)}
+                  Volume profile ({analysis.volumeProfile.lookback} bars): POC {fmtPrice(analysis.volumeProfile.poc)} · VA{" "}
+                  {fmtPrice(analysis.volumeProfile.val)}–{fmtPrice(analysis.volumeProfile.vah)}
                 </li>
+                {analysis.volumeProfile.hvns.length > 0 && (
+                  <li>HVNs: {analysis.volumeProfile.hvns.map((nd) => fmtPrice(nd.price)).join(", ")}</li>
+                )}
+                {analysis.volumeProfile.lvns.length > 0 && (
+                  <li>LVNs: {analysis.volumeProfile.lvns.map((nd) => fmtPrice(nd.price)).join(", ")}</li>
+                )}
                 <li>RSI(14): {analysis.trend.rsi14?.toFixed(1) ?? "—"}</li>
                 {analysis.higherTimeframeTrend && (
                   <li>

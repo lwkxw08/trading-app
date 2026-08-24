@@ -10,6 +10,8 @@ export const runtime = "edge";
 export async function GET(req: NextRequest) {
   const symbol = req.nextUrl.searchParams.get("symbol");
   const tf = (req.nextUrl.searchParams.get("tf") ?? "1h") as Timeframe;
+  const vpBarsRaw = Number(req.nextUrl.searchParams.get("vpBars") ?? "200");
+  const vpBars = Number.isFinite(vpBarsRaw) ? Math.max(20, Math.min(1000, Math.round(vpBarsRaw))) : 200;
   if (!symbol) return NextResponse.json({ error: "symbol required" }, { status: 400 });
   if (!TIMEFRAMES.includes(tf)) return NextResponse.json({ error: "invalid timeframe" }, { status: 400 });
 
@@ -23,7 +25,7 @@ export async function GET(req: NextRequest) {
     ]);
     if (candles.length < 50) return NextResponse.json({ error: "not enough data" }, { status: 502 });
 
-    const analysis = analyze(symbol, tf, candles, htfCandles, htf);
+    const analysis = analyze(symbol, tf, candles, htfCandles, htf, { vpBars });
     const opportunities = scoreOpportunities(analysis, events);
 
     // Strip the raw candle array from the analysis payload (client fetches

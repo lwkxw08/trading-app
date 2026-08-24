@@ -29,16 +29,25 @@ export interface ZoneBox {
   label: string;
 }
 
+export interface ProfileOverlay {
+  bins: { price: number; volume: number }[];
+  poc: number;
+  vah: number;
+  val: number;
+}
+
 export default function PriceChart({
   candles,
   levels,
   zones = [],
+  profile = null,
   drawMode = false,
   onPriceClick,
 }: {
   candles: Candle[];
   levels: LevelLine[];
   zones?: ZoneBox[];
+  profile?: ProfileOverlay | null;
   drawMode?: boolean;
   onPriceClick?: (price: number) => void;
 }) {
@@ -50,10 +59,12 @@ export default function PriceChart({
   const datasetRef = useRef<number | null>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const zonesRef = useRef<ZoneBox[]>(zones);
+  const profileRef = useRef<ProfileOverlay | null>(profile);
   const clickRef = useRef<{ drawMode: boolean; onPriceClick?: (price: number) => void }>({ drawMode, onPriceClick });
   const [fullscreen, setFullscreen] = useState(false);
 
   zonesRef.current = zones;
+  profileRef.current = profile;
   clickRef.current = { drawMode, onPriceClick };
 
   const drawZones = useCallback(() => {
@@ -86,6 +97,32 @@ export default function PriceChart({
       ctx.fillStyle = "#c8cfdb";
       ctx.font = "10px sans-serif";
       ctx.fillText(z.label, Math.max(xFrom + 4, 4), Math.min(yTop + 12, h - 4));
+    }
+
+    // volume profile histogram along the left edge of the pane
+    const p = profileRef.current;
+    if (p && p.bins.length > 1) {
+      const maxVol = Math.max(...p.bins.map((b) => b.volume));
+      if (maxVol > 0) {
+        const maxBarWidth = paneWidth * 0.22;
+        const y0 = series.priceToCoordinate(p.bins[0].price);
+        const y1 = series.priceToCoordinate(p.bins[1].price);
+        const binH = y0 != null && y1 != null ? Math.max(1, Math.abs(y1 - y0) - 1) : 3;
+        const pocPrice = p.bins.reduce((best, b) => (b.volume > best.volume ? b : best), p.bins[0]).price;
+        for (const b of p.bins) {
+          const y = series.priceToCoordinate(b.price);
+          if (y == null) continue;
+          const barW = (b.volume / maxVol) * maxBarWidth;
+          const inValueArea = b.price >= p.val && b.price <= p.vah;
+          ctx.fillStyle =
+            b.price === pocPrice
+              ? "rgba(234,179,8,0.55)"
+              : inValueArea
+                ? "rgba(79,140,255,0.35)"
+                : "rgba(79,140,255,0.16)";
+          ctx.fillRect(0, y - binH / 2, barW, binH);
+        }
+      }
     }
   }, []);
 
@@ -204,7 +241,7 @@ export default function PriceChart({
 
   useEffect(() => {
     drawZones();
-  }, [zones, drawZones]);
+  }, [zones, profile, drawZones]);
 
   useEffect(() => {
     const series = seriesRef.current;

@@ -38,12 +38,29 @@ export interface VolumeProfileLevel {
   volume: number;
 }
 
+export interface VolumeNode {
+  kind: "volume_node";
+  type: "hvn" | "lvn";
+  price: number;
+  volume: number;
+  /** volume relative to the profile's peak bin, 0..1 */
+  strength: number;
+}
+
 export interface VolumeProfile {
   kind: "volume_profile";
   poc: number; // point of control
   vah: number; // value area high
   val: number; // value area low
   bins: VolumeProfileLevel[];
+  /** high-volume nodes: local volume peaks that act as support/resistance */
+  hvns: VolumeNode[];
+  /** low-volume nodes: thin-volume shelves price tends to traverse quickly */
+  lvns: VolumeNode[];
+  /** number of candles the profile was computed over */
+  lookback: number;
+  /** unix seconds of the first candle in the profile window */
+  startTime: number;
 }
 
 export interface LiquiditySweep {

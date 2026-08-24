@@ -12,6 +12,8 @@ export type ConditionId =
   | "fvg_retest"
   | "order_block"
   | "volume_profile_value"
+  | "hvn_level"
+  | "lvn_path"
   | "liquidity_sweep"
   | "bos"
   | "choch"
@@ -45,6 +47,8 @@ export const CONDITION_LIBRARY: ConditionMeta[] = [
   { id: "fvg_retest", label: "Fair Value Gap retest", description: "Price within 1 ATR of an unfilled FVG in trade direction", defaultWeight: 20, pineSupported: true },
   { id: "order_block", label: "Order block", description: "Unmitigated order block near price in trade direction", defaultWeight: 18, pineSupported: false },
   { id: "volume_profile_value", label: "Volume profile value area", description: "Longs between VAL and POC, shorts between POC and VAH", defaultWeight: 15, pineSupported: false },
+  { id: "hvn_level", label: "High-volume node level", description: "An HVN within 1 ATR acting as support (longs) or resistance (shorts)", defaultWeight: 12, pineSupported: false },
+  { id: "lvn_path", label: "Low-volume node path", description: "An LVN within 2 ATR in the trade direction — thin volume eases the move", defaultWeight: 6, pineSupported: false },
   { id: "liquidity_sweep", label: "Liquidity sweep", description: "Stop hunt beyond a swing high/low reclaimed within last 10 bars", defaultWeight: 16, pineSupported: true },
   { id: "bos", label: "Break of Structure (BOS)", description: "Latest structure break continues in trade direction", defaultWeight: 10, pineSupported: true },
   { id: "choch", label: "Change of Character (CHoCH)", description: "Latest structure break is a reversal into trade direction", defaultWeight: 14, pineSupported: true },
@@ -88,6 +92,14 @@ function conditionMet(id: ConditionId, a: StrategyAnalysis, direction: "long" | 
       const vp = a.volumeProfile;
       const met = bull ? price >= vp.val && price <= vp.poc : price <= vp.vah && price >= vp.poc;
       return { met, detail: met ? (bull ? "Price in value-area discount (VAL–POC)" : "Price in value-area premium (POC–VAH)") : "Price outside favorable value area" };
+    }
+    case "hvn_level": {
+      const hit = a.volumeProfile.hvns.find((nd) => (bull ? price >= nd.price && price - nd.price <= near : nd.price >= price && nd.price - price <= near));
+      return { met: Boolean(hit), detail: hit ? `HVN at ${hit.price.toFixed(2)} acting as ${bull ? "support" : "resistance"}` : "No HVN within 1 ATR on the right side" };
+    }
+    case "lvn_path": {
+      const hit = a.volumeProfile.lvns.find((nd) => (bull ? nd.price > price && nd.price - price <= 2 * atrVal : nd.price < price && price - nd.price <= 2 * atrVal));
+      return { met: Boolean(hit), detail: hit ? `LVN at ${hit.price.toFixed(2)} ${bull ? "above" : "below"} — thin-volume path` : "No LVN ahead within 2 ATR" };
     }
     case "liquidity_sweep": {
       const recentBars = a.candles.length - 1;

@@ -31,9 +31,10 @@ export function computeTrend(candles: Candle[], timeframe: Timeframe): TrendStat
   return { timeframe, direction, ema20, ema50, ema200, rsi14, macdHistogram, atr14 };
 }
 
-export function analyze(symbol: string, timeframe: Timeframe, candles: Candle[], higherTfCandles?: Candle[], higherTf?: Timeframe): StrategyAnalysis {
+export function analyze(symbol: string, timeframe: Timeframe, candles: Candle[], higherTfCandles?: Candle[], higherTf?: Timeframe, opts?: { vpBars?: number }): StrategyAnalysis {
   const atr14 = atr(candles, 14);
-  const profileWindow = candles.slice(-Math.min(candles.length, 200));
+  const vpBars = opts?.vpBars ?? 200;
+  const profileWindow = candles.slice(-Math.min(candles.length, vpBars));
   const swings = detectSwings(candles);
   return {
     symbol,
