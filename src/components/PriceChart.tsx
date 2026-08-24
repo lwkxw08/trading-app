@@ -116,10 +116,10 @@ export default function PriceChart({
           const inValueArea = b.price >= p.val && b.price <= p.vah;
           ctx.fillStyle =
             b.price === pocPrice
-              ? "rgba(234,179,8,0.55)"
+              ? "rgba(234,179,8,0.9)"
               : inValueArea
-                ? "rgba(79,140,255,0.35)"
-                : "rgba(79,140,255,0.16)";
+                ? "rgba(96,150,255,0.65)"
+                : "rgba(96,150,255,0.35)";
           ctx.fillRect(0, y - binH / 2, barW, binH);
         }
       }
@@ -281,7 +281,7 @@ export default function PriceChart({
           ref={containerRef}
           className={`h-full w-full overflow-hidden rounded-lg border border-edge ${drawMode ? "cursor-crosshair" : ""}`}
         />
-        <canvas ref={overlayRef} className="pointer-events-none absolute inset-0" />
+        <canvas ref={overlayRef} className="pointer-events-none absolute inset-0 z-[3]" />
       </div>
     </div>
   );
