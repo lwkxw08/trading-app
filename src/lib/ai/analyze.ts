@@ -143,6 +143,48 @@ export async function composeStrategy(description: string): Promise<CustomStrate
   };
 }
 
+export interface JournalReview {
+  overview: string;
+  edgeAnalysis: string;
+  executionAnalysis: string;
+  patterns: string;
+  refinements: string[];
+  riskAdvice: string;
+}
+
+/**
+ * Coaching review of the user's trade journal: Claude receives closed/open
+ * trades (with the confluence snapshot captured at entry) plus aggregate
+ * stats, and suggests concrete strategy refinements. Advice must reference
+ * only conditions the deterministic engine supports.
+ */
+export async function reviewJournal(payload: unknown): Promise<JournalReview> {
+  if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
+
+  const supported = CONDITION_LIBRARY.map((c) => c.label).join(", ");
+  const text = await callClaude(
+    [
+      "You are a trading performance coach for a trading-intelligence platform.",
+      "Input: the user's trade journal — each trade has direction, entry/exit, stop/target, the platform's confluence score and factors detected at entry, market trend/RSI snapshot, and notes — plus aggregate stats (win rate, avg R, per-factor and per-strategy performance).",
+      "Analyze what is working and what is not: which confluence factors and strategies correlate with wins/losses, entry/exit quality vs the recorded stop/target plan, direction or session biases, and risk consistency.",
+      `When suggesting refinements, only reference conditions the platform supports: ${supported}. Refinements should be specific and actionable (e.g. tighten a filter, require an extra confluence, adjust R targets), not generic platitudes.`,
+      "If the sample is small, say so and keep conclusions tentative. Educational analysis only, not financial advice.",
+      'Respond ONLY with JSON: {"overview": string, "edgeAnalysis": string, "executionAnalysis": string, "patterns": string, "refinements": [string], "riskAdvice": string}. Each string field 2-4 sentences; refinements is 3-6 short actionable items.',
+    ].join(" "),
+    JSON.stringify(payload),
+    1800,
+  );
+  const parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as Partial<JournalReview>;
+  return {
+    overview: parsed.overview ?? "",
+    edgeAnalysis: parsed.edgeAnalysis ?? "",
+    executionAnalysis: parsed.executionAnalysis ?? "",
+    patterns: parsed.patterns ?? "",
+    refinements: Array.isArray(parsed.refinements) ? parsed.refinements.filter((r): r is string => typeof r === "string") : [],
+    riskAdvice: parsed.riskAdvice ?? "",
+  };
+}
+
 export interface DailyBriefing {
   headline: string;
   marketOverview: string;

@@ -10,6 +10,7 @@ AI-powered market analysis across crypto, stocks and futures: confluence-scored 
 - **Market data** (`src/lib/market/`) — provider abstraction; Binance public API (free, real-time, all timeframes) powers crypto today. A Polygon.io adapter for stocks/futures activates automatically when `POLYGON_API_KEY` is set.
 - **Risk engine** (`src/lib/risk/`) — position size / SL / TP math shared by the UI and the generated Pine Scripts.
 - **Pine generator** (`src/lib/pine/`) — tested Pine Script v6 templates (EMA cross, RSI reversal, FVG signals, MACD momentum) plus generated indicators for custom strategies (weighted condition scoring), all with alerts and an on-chart position-size table.
+- **Trade journal** (`src/lib/journal/`) — log entries/exits with the engine's confluence score & factors snapshotted at entry (stored in browser localStorage), per-factor/per-strategy edge stats (win rate, avg R, profit factor), and an AI coach that reviews the journal and suggests concrete strategy refinements limited to supported conditions.
 - **Economic calendar** (`src/lib/calendar/`) — free weekly feed (Forex Factory data), cached 30 min; high-impact events penalize opportunity scores inside a 12-hour risk window.
 
 ## Pages
@@ -20,6 +21,7 @@ AI-powered market analysis across crypto, stocks and futures: confluence-scored 
 | `/scanner` | Confluence scanner across a symbol universe with filters |
 | `/analyze/[symbol]` | Chart with structure overlays, scored setups, AI analysis, trade plan builder |
 | `/strategies` | Strategy Lab: build custom strategies, AI composition, live evaluation, Pine export |
+| `/journal` | Trade Journal: log trades with confluence snapshots, edge stats, AI coaching review |
 | `/indicators` | Indicator Studio: generate Pine Script v6 for TradingView |
 | `/calendar` | Full economic calendar with impact filters |
 
