@@ -9,6 +9,7 @@ import { fmtCompact, fmtPct, fmtPrice, fmtTime } from "@/components/format";
 import { useLiveTickers } from "@/components/useLiveMarket";
 import type { DailyBriefing } from "@/lib/ai/analyze";
 import type { EconomicEvent } from "@/lib/calendar/types";
+import { MARKETS, MARKET_LABELS, type Market } from "@/lib/market/universe";
 import { TIMEFRAMES, type Ticker, type Timeframe } from "@/lib/market/types";
 import type { Opportunity } from "@/lib/strategies/types";
 
@@ -21,13 +22,18 @@ export default function CommandCenter() {
   const [briefingLoading, setBriefingLoading] = useState(false);
   const [scanLoading, setScanLoading] = useState(true);
   const [tf, setTf] = useState<Timeframe>("4h");
+  const [market, setMarket] = useState<Market>("crypto");
   const live = useLiveTickers(tickers.map((t) => t.symbol));
 
   useEffect(() => {
-    fetch(apiUrl("/api/tickers"))
+    setTickers([]);
+    fetch(apiUrl(`/api/tickers?market=${market}`))
       .then((r) => r.json())
       .then((d) => setTickers(d.tickers ?? []))
       .catch(() => {});
+  }, [market]);
+
+  useEffect(() => {
     fetch(apiUrl("/api/calendar"))
       .then((r) => r.json())
       .then((d) => {
@@ -43,17 +49,17 @@ export default function CommandCenter() {
 
   useEffect(() => {
     setScanLoading(true);
-    fetch(apiUrl(`/api/scan?tf=${tf}`))
+    fetch(apiUrl(`/api/scan?tf=${tf}&market=${market}`))
       .then((r) => r.json())
       .then((d) => setOpportunities(d.opportunities ?? []))
       .catch(() => {})
       .finally(() => setScanLoading(false));
-  }, [tf]);
+  }, [tf, market]);
 
   const loadBriefing = useCallback(() => {
     setBriefingLoading(true);
     setBriefingError(null);
-    fetch(apiUrl(`/api/ai/briefing?tf=${tf}`))
+    fetch(apiUrl(`/api/ai/briefing?tf=${tf}&market=${market}`))
       .then(async (r) => {
         const d = await r.json();
         if (!r.ok) throw new Error(d.error ?? "briefing failed");
@@ -61,10 +67,25 @@ export default function CommandCenter() {
       })
       .catch((e) => setBriefingError(e.message))
       .finally(() => setBriefingLoading(false));
-  }, [tf]);
+  }, [tf, market]);
 
   return (
     <div className="space-y-6">
+      {/* Market selector */}
+      <div className="flex items-center gap-1">
+        {MARKETS.map((m) => (
+          <button
+            key={m}
+            onClick={() => setMarket(m)}
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+              m === market ? "bg-accent text-white" : "border border-edge bg-surface text-muted hover:text-foreground"
+            }`}
+          >
+            {MARKET_LABELS[m]}
+          </button>
+        ))}
+      </div>
+
       {/* Ticker strip */}
       <div className="flex gap-3 overflow-x-auto pb-1">
         {tickers.map((base) => {
@@ -143,7 +164,7 @@ export default function CommandCenter() {
           {/* Top opportunities */}
           <section>
             <div className="mb-3 flex items-center justify-between">
-              <h2 className="font-semibold">Top Opportunities ({tf} scan)</h2>
+              <h2 className="font-semibold">Top Opportunities ({MARKET_LABELS[market]} · {tf} scan)</h2>
               <Link href="/scanner" className="text-xs text-accent hover:underline">
                 Open scanner →
               </Link>

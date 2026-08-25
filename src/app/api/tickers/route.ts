@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { DEFAULT_CRYPTO_UNIVERSE } from "@/lib/market/binance";
 import { availableAssetClasses, getProviderForSymbol } from "@/lib/market/registry";
+import { defaultUniverse, isMarket } from "@/lib/market/universe";
 
 export const runtime = "edge";
 
 export async function GET(req: NextRequest) {
   const symbolsParam = req.nextUrl.searchParams.get("symbols");
+  const marketParam = req.nextUrl.searchParams.get("market");
   const symbols = symbolsParam
     ? symbolsParam.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 30)
-    : DEFAULT_CRYPTO_UNIVERSE.map((c) => c.symbol);
+    : defaultUniverse(isMarket(marketParam) ? marketParam : "crypto");
   try {
     // Symbols can mix providers (crypto + stocks/forex) — group per provider.
     const groups = new Map<ReturnType<typeof getProviderForSymbol>, string[]>();

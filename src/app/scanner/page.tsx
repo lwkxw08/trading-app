@@ -6,11 +6,13 @@ import OpportunityCard from "@/components/OpportunityCard";
 import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
+import { MARKETS, MARKET_LABELS, type Market } from "@/lib/market/universe";
 import { captureSignals, loadSignals, saveSignals } from "@/lib/signals/store";
 import type { Opportunity } from "@/lib/strategies/types";
 
 export default function Scanner() {
   const [tf, setTf] = useState<Timeframe>("4h");
+  const [market, setMarket] = useState<Market>("crypto");
   const [symbols, setSymbols] = useState("");
   const [direction, setDirection] = useState<"all" | "long" | "short">("all");
   const [minScore, setMinScore] = useState(40);
@@ -23,7 +25,7 @@ export default function Scanner() {
   const scan = useCallback(() => {
     setLoading(true);
     setTracked(null);
-    const params = new URLSearchParams({ tf });
+    const params = new URLSearchParams({ tf, market });
     if (symbols.trim()) params.set("symbols", symbols.trim());
     fetch(apiUrl(`/api/scan?${params}`))
       .then((r) => r.json())
@@ -40,7 +42,7 @@ export default function Scanner() {
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [tf, symbols, track, minScore, direction]);
+  }, [tf, market, symbols, track, minScore, direction]);
 
   useEffect(() => {
     scan();
@@ -55,6 +57,22 @@ export default function Scanner() {
     <div className="space-y-4">
       <h1 className="text-xl font-bold">Opportunity Scanner</h1>
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-edge bg-surface p-4">
+        <label className="block text-sm">
+          <span className="text-xs text-muted">Market</span>
+          <div className="mt-1 flex gap-1">
+            {MARKETS.map((m) => (
+              <button
+                key={m}
+                onClick={() => setMarket(m)}
+                className={`rounded px-2 py-1 text-xs font-semibold ${
+                  m === market ? "bg-accent text-white" : "bg-background text-muted hover:text-foreground"
+                }`}
+              >
+                {MARKET_LABELS[m]}
+              </button>
+            ))}
+          </div>
+        </label>
         <label className="block text-sm">
           <span className="text-xs text-muted">Timeframe</span>
           <div className="mt-1 flex gap-1">
@@ -78,7 +96,7 @@ export default function Scanner() {
               value={symbols}
               onChange={setSymbols}
               multi
-              placeholder="BTCUSDT, ETHUSDT, SOLUSDT…"
+              placeholder="BTCUSDT, AAPL, EURUSD…"
               className="w-full rounded-md border border-edge bg-background px-2 py-1.5 text-sm outline-none focus:border-accent"
             />
           </div>

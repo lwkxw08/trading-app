@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { generateBriefing, isAiConfigured } from "@/lib/ai/analyze";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { getEconomicCalendar } from "@/lib/calendar/economic";
-import { DEFAULT_CRYPTO_UNIVERSE } from "@/lib/market/binance";
 import { getProviderForSymbol } from "@/lib/market/registry";
+import { defaultUniverse, isMarket } from "@/lib/market/universe";
 import { scoreOpportunities } from "@/lib/strategies/confluence";
 import { analyze, higherTimeframe } from "@/lib/strategies/engine";
 import type { Opportunity } from "@/lib/strategies/types";
@@ -15,9 +15,14 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: "AI not configured: set ANTHROPIC_API_KEY" }, { status: 503 });
   }
   try {
-    const symbols = DEFAULT_CRYPTO_UNIVERSE.slice(0, 6).map((c) => c.symbol);
+    const params = new URL(req.url).searchParams;
+    const marketParam = params.get("market");
+    const market = isMarket(marketParam) ? marketParam : "crypto";
+    // Non-crypto briefings use 3 symbols: 2 candle credits each + the quote
+    // batch stays inside Twelve Data's free-tier 8 credits/min.
+    const symbols = defaultUniverse(market).slice(0, market === "crypto" ? 6 : 3);
     const provider = getProviderForSymbol(symbols[0]);
-    const tfParam = new URL(req.url).searchParams.get("tf");
+    const tfParam = params.get("tf");
     const tf: Timeframe = TIMEFRAMES.includes(tfParam as Timeframe) ? (tfParam as Timeframe) : "4h";
     const htf = higherTimeframe(tf);
     const [tickers, events] = await Promise.all([provider.getTickers(symbols), getEconomicCalendar()]);

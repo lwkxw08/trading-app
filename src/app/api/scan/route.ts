@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEconomicCalendar } from "@/lib/calendar/economic";
-import { DEFAULT_CRYPTO_UNIVERSE } from "@/lib/market/binance";
 import { getProviderForSymbol } from "@/lib/market/registry";
+import { defaultUniverse, isMarket } from "@/lib/market/universe";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { scoreOpportunities } from "@/lib/strategies/confluence";
 import { analyze, higherTimeframe } from "@/lib/strategies/engine";
@@ -12,11 +12,12 @@ export const runtime = "edge";
 export async function GET(req: NextRequest) {
   const tf = (req.nextUrl.searchParams.get("tf") ?? "4h") as Timeframe;
   const symbolsParam = req.nextUrl.searchParams.get("symbols");
+  const marketParam = req.nextUrl.searchParams.get("market");
   if (!TIMEFRAMES.includes(tf)) return NextResponse.json({ error: "invalid timeframe" }, { status: 400 });
 
   const symbols = symbolsParam
     ? symbolsParam.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 20)
-    : DEFAULT_CRYPTO_UNIVERSE.map((c) => c.symbol);
+    : defaultUniverse(isMarket(marketParam) ? marketParam : "crypto");
 
   const events = await getEconomicCalendar();
   const htf = higherTimeframe(tf);
