@@ -2,9 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { fmtPrice, fmtTime } from "@/components/format";
+import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
+import { calibrateWeights, calibrationToStrategy, MIN_RESOLVED_FOR_CALIBRATION } from "@/lib/signals/calibrate";
 import { resolveSignals } from "@/lib/signals/resolve";
 import { computeSignalStats, loadSignals, saveSignals } from "@/lib/signals/store";
 import type { SignalBucket, TrackedSignal } from "@/lib/signals/types";
+import { addSavedStrategy } from "@/lib/strategies/savedStore";
 
 export default function SignalsPage() {
   const [signals, setSignals] = useState<TrackedSignal[]>([]);
@@ -47,6 +50,24 @@ export default function SignalsPage() {
   }, []);
 
   const shown = signals.filter((s) => outcomeFilter === "all" || s.outcome === outcomeFilter);
+
+  // Weight calibration
+  const [calTf, setCalTf] = useState<Timeframe | "all">("all");
+  const [calSymbol, setCalSymbol] = useState<string>("all");
+  const [calSaved, setCalSaved] = useState(false);
+  const symbols = useMemo(() => [...new Set(signals.map((s) => s.symbol))].sort(), [signals]);
+  const calibration = useMemo(
+    () => calibrateWeights(signals, { timeframe: calTf, symbol: calSymbol }),
+    [signals, calTf, calSymbol],
+  );
+  const calibratedCount = calibration.filter((r) => r.calibrated).length;
+
+  const saveCalibrated = useCallback(() => {
+    const scope = [calTf === "all" ? "all TFs" : calTf, calSymbol === "all" ? "all symbols" : calSymbol].join(" · ");
+    addSavedStrategy(calibrationToStrategy(calibration, `Calibrated (${scope})`), "calibrated");
+    setCalSaved(true);
+    setTimeout(() => setCalSaved(false), 2500);
+  }, [calibration, calTf, calSymbol]);
 
   return (
     <div className="space-y-4">
@@ -115,6 +136,98 @@ export default function SignalsPage() {
               </div>
             </div>
           )}
+
+          <section className="rounded-lg border border-edge bg-surface p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h2 className="font-semibold">Auto-calibrated confluence weights</h2>
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <select
+                  value={calTf}
+                  onChange={(e) => setCalTf(e.target.value as Timeframe | "all")}
+                  className="rounded-md border border-edge bg-background px-2 py-1 outline-none"
+                >
+                  <option value="all">All timeframes</option>
+                  {TIMEFRAMES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={calSymbol}
+                  onChange={(e) => setCalSymbol(e.target.value)}
+                  className="rounded-md border border-edge bg-background px-2 py-1 outline-none"
+                >
+                  <option value="all">All symbols</option>
+                  {symbols.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={saveCalibrated}
+                  disabled={calibratedCount === 0}
+                  className="rounded-md bg-accent px-3 py-1.5 font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  {calSaved ? "Saved ✓" : "Save as strategy"}
+                </button>
+              </div>
+            </div>
+            <p className="mt-1 text-xs text-muted">
+              Each factor&apos;s tracked hit rate and average R scale its default weight up or down — evidence-based
+              weighting instead of heuristics. Factors need ≥{MIN_RESOLVED_FOR_CALIBRATION} resolved signals in the
+              selected scope to be calibrated; the rest keep their defaults. Saved strategies appear in the Backtest
+              tab&apos;s comparison matrix.
+            </p>
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="text-muted">
+                  <tr>
+                    <th className="py-1 pr-3">Condition</th>
+                    <th className="py-1 pr-3">Signals</th>
+                    <th className="py-1 pr-3">Resolved</th>
+                    <th className="py-1 pr-3">Hit rate</th>
+                    <th className="py-1 pr-3">Avg R</th>
+                    <th className="py-1 pr-3">Default → suggested</th>
+                    <th className="py-1">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calibration.map((r) => (
+                    <tr key={r.conditionId} className="border-t border-edge">
+                      <td className="py-1 pr-3">{r.label}</td>
+                      <td className="py-1 pr-3">{r.signals}</td>
+                      <td className="py-1 pr-3">{r.resolved}</td>
+                      <td className="py-1 pr-3">{r.hitRate !== null ? `${r.hitRate.toFixed(0)}%` : "—"}</td>
+                      <td className={`py-1 pr-3 font-mono ${(r.avgR ?? 0) > 0 ? "text-bull" : (r.avgR ?? 0) < 0 ? "text-bear" : ""}`}>
+                        {r.avgR !== null ? r.avgR.toFixed(2) : "—"}
+                      </td>
+                      <td className="py-1 pr-3 font-mono">
+                        {r.defaultWeight} →{" "}
+                        <span
+                          className={
+                            r.suggestedWeight > r.defaultWeight ? "text-bull" : r.suggestedWeight < r.defaultWeight ? "text-bear" : ""
+                          }
+                        >
+                          {r.suggestedWeight}
+                        </span>
+                      </td>
+                      <td className="py-1">
+                        {r.calibrated ? (
+                          <span className="rounded bg-bull/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-bull">calibrated</span>
+                        ) : (
+                          <span className="rounded bg-edge px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                            needs {Math.max(0, MIN_RESOLVED_FOR_CALIBRATION - r.resolved)} more
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
 
           <section className="rounded-lg border border-edge bg-surface p-4">
             <div className="flex items-center justify-between gap-2">

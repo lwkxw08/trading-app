@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
-import type { JournalReview } from "@/lib/ai/analyze";
+import type { GapReview, JournalReview } from "@/lib/ai/analyze";
+import type { GapFindings } from "@/lib/journal/gap";
 import { computeStats, loadTrades, saveTrades, tradeMetrics } from "@/lib/journal/store";
 import type { JournalTrade, MarketSnapshot } from "@/lib/journal/types";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
@@ -33,6 +34,12 @@ export default function JournalPage() {
   const [review, setReview] = useState<JournalReview | null>(null);
   const [reviewLoading, setReviewLoading] = useState(false);
   const [reviewError, setReviewError] = useState<string | null>(null);
+
+  const [gapFindings, setGapFindings] = useState<GapFindings | null>(null);
+  const [gapReview, setGapReview] = useState<GapReview | null>(null);
+  const [gapAiError, setGapAiError] = useState<string | null>(null);
+  const [gapLoading, setGapLoading] = useState(false);
+  const [gapError, setGapError] = useState<string | null>(null);
 
   useEffect(() => {
     setTrades(loadTrades());
@@ -160,6 +167,43 @@ export default function JournalPage() {
       .catch((e) => setReviewError(e.message))
       .finally(() => setReviewLoading(false));
   }, [trades, stats]);
+
+  const runGap = useCallback(() => {
+    setGapLoading(true);
+    setGapError(null);
+    setGapFindings(null);
+    setGapReview(null);
+    setGapAiError(null);
+    fetch(apiUrl("/api/journal/gap"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        trades: trades.map((t) => ({
+          symbol: t.symbol,
+          tf: t.timeframe,
+          direction: t.direction,
+          status: t.status,
+          entryPrice: t.entryPrice,
+          entryTime: t.entryTime,
+          stopLoss: t.stopLoss,
+          takeProfit: t.takeProfit,
+          strategyName: t.strategyName,
+          exitPrice: t.exitPrice,
+          exitTime: t.exitTime,
+          rMultiple: tradeMetrics(t)?.rMultiple ?? null,
+        })),
+      }),
+    })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error ?? "gap analysis failed");
+        setGapFindings(d.findings);
+        setGapReview(d.review);
+        setGapAiError(d.aiError);
+      })
+      .catch((e) => setGapError(e.message))
+      .finally(() => setGapLoading(false));
+  }, [trades]);
 
   const inputCls = "rounded-md border border-edge bg-background px-2 py-1 text-sm outline-none focus:border-accent";
 
@@ -371,6 +415,83 @@ export default function JournalPage() {
                   </div>
                 )}
                 <ReviewBlock title="Risk" text={review.riskAdvice} />
+              </div>
+            )}
+          </section>
+
+          {/* Journal ↔ backtest gap analysis */}
+          <section className="rounded-lg border border-edge bg-surface p-4">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Discipline mirror</h2>
+              <button
+                onClick={runGap}
+                disabled={gapLoading || trades.length === 0}
+                className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {gapLoading ? "Comparing…" : "Compare vs strategy"}
+              </button>
+            </div>
+            {gapError && <p className="mt-2 text-xs text-bear">{gapError}</p>}
+            {!gapFindings && !gapError && (
+              <p className="mt-2 text-xs text-muted">
+                Replays the built-in strategy over your journalled symbols/timeframes and compares it with what you
+                actually did — missed signals, entries with no signal, exits cut short, and quick re-entries after
+                losses. Educational analysis, not financial advice.
+              </p>
+            )}
+            {gapFindings && (
+              <div className="mt-3 space-y-3 text-sm">
+                <div className="grid grid-cols-3 gap-2">
+                  <Stat label="Signals in period" value={String(gapFindings.signalledTrades)} />
+                  <Stat label="Trades matching a signal" value={`${gapFindings.matchedTrades} / ${gapFindings.journalTrades}`} />
+                  <Stat label="Gap events" value={String(gapFindings.events.length)} />
+                </div>
+                <p className="text-xs text-muted">
+                  Compared {gapFindings.pairsAnalyzed.map((p) => `${p.symbol} ${p.timeframe}`).join(", ")} against the
+                  built-in strategy (score≥55). Journal entries within 3 bars of a signal count as taking it.
+                </p>
+                {gapFindings.events.length > 0 && (
+                  <div className="max-h-72 space-y-1 overflow-y-auto">
+                    {gapFindings.events.map((ev, i) => (
+                      <div key={i} className="rounded-md border border-edge bg-background px-3 py-1.5 text-xs">
+                        <span
+                          className={`mr-2 rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                            ev.type === "missed_entry"
+                              ? "bg-accent/15 text-accent"
+                              : ev.type === "early_exit"
+                                ? "bg-bear/15 text-bear"
+                                : ev.type === "quick_reentry_after_loss"
+                                  ? "bg-bear/15 text-bear"
+                                  : "bg-edge text-muted"
+                          }`}
+                        >
+                          {ev.type.replace(/_/g, " ")}
+                        </span>
+                        <span className="font-mono">{ev.symbol}</span> · {ev.timeframe} · {fmtTime(Math.floor(ev.time / 1000))}
+                        <span className="mt-0.5 block text-muted">{ev.detail}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {gapReview && (
+                  <div className="space-y-3 border-t border-edge pt-3">
+                    <ReviewBlock title="Overview" text={gapReview.overview} />
+                    <ReviewBlock title="Missed entries" text={gapReview.missedEntries} />
+                    <ReviewBlock title="Exit discipline" text={gapReview.exitDiscipline} />
+                    <ReviewBlock title="Unsignalled trades" text={gapReview.unsignalledTrades} />
+                    {gapReview.actions.length > 0 && (
+                      <div>
+                        <h3 className="text-xs font-semibold uppercase text-muted">Behavioral rules</h3>
+                        <ul className="mt-1 list-disc space-y-1 pl-4 text-xs">
+                          {gapReview.actions.map((a, i) => (
+                            <li key={i}>{a}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {gapAiError && <p className="text-xs text-muted">AI narrative unavailable: {gapAiError}</p>}
               </div>
             )}
           </section>

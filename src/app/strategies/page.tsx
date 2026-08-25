@@ -1,12 +1,13 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import PineTemplates from "@/components/PineTemplates";
 import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { fmtPrice } from "@/components/format";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomEvaluation, type CustomStrategy } from "@/lib/strategies/custom";
+import { addSavedStrategy, deleteSavedStrategy, loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 
 interface ConditionState {
   enabled: boolean;
@@ -31,6 +32,12 @@ export default function StrategyLab() {
   const [script, setScript] = useState<string | null>(null);
   const [pineError, setPineError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const [saved, setSaved] = useState<SavedStrategy[]>([]);
+  const [justSaved, setJustSaved] = useState(false);
+
+  useEffect(() => {
+    setSaved(loadSavedStrategies());
+  }, []);
 
   const strategy = useMemo<CustomStrategy>(
     () => ({
@@ -105,6 +112,25 @@ export default function StrategyLab() {
 
   const enabledCount = strategy.conditions.length;
 
+  const saveStrategy = useCallback(() => {
+    setSaved(addSavedStrategy(strategy, "manual"));
+    setJustSaved(true);
+    setTimeout(() => setJustSaved(false), 2000);
+  }, [strategy]);
+
+  const loadStrategy = useCallback((s: CustomStrategy) => {
+    setName(s.name);
+    setMinScore(s.minScore);
+    setConditions(
+      Object.fromEntries(
+        CONDITION_LIBRARY.map((c) => {
+          const picked = s.conditions.find((x) => x.id === c.id);
+          return [c.id, { enabled: Boolean(picked), weight: picked?.weight ?? c.defaultWeight }];
+        }),
+      ) as Record<ConditionId, ConditionState>,
+    );
+  }, []);
+
   return (
     <div className="space-y-4">
       <div>
@@ -154,6 +180,14 @@ export default function StrategyLab() {
                   onChange={(e) => setName(e.target.value)}
                   className="w-52 rounded-md border border-edge bg-background px-2 py-1 text-sm outline-none focus:border-accent"
                 />
+                <button
+                  onClick={saveStrategy}
+                  disabled={enabledCount === 0}
+                  className="rounded-md border border-edge px-3 py-1 text-xs font-semibold hover:bg-edge disabled:opacity-50"
+                  title="Save to your strategy library — used by the Backtest tab's comparison matrix"
+                >
+                  {justSaved ? "Saved ✓" : "Save strategy"}
+                </button>
               </div>
             </div>
             <div className="mt-3 grid gap-2 md:grid-cols-2">
@@ -246,6 +280,38 @@ export default function StrategyLab() {
               </p>
             )}
           </section>
+
+          {saved.length > 0 && (
+            <section className="rounded-lg border border-edge bg-surface p-4">
+              <h2 className="font-semibold">Saved strategies ({saved.length})</h2>
+              <p className="mt-1 text-xs text-muted">
+                Load one back into the editor, or compare them side by side in the Backtest tab&apos;s comparison matrix.
+              </p>
+              <div className="mt-2 space-y-1">
+                {saved.map((s) => (
+                  <div key={s.id} className="flex items-center justify-between gap-2 rounded-md border border-edge bg-background px-3 py-1.5 text-sm">
+                    <span>
+                      {s.strategy.name}
+                      {s.source === "calibrated" && (
+                        <span className="ml-2 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent">calibrated</span>
+                      )}
+                      <span className="ml-2 text-xs text-muted">
+                        {s.strategy.conditions.length} condition{s.strategy.conditions.length === 1 ? "" : "s"} · min score {s.strategy.minScore}
+                      </span>
+                    </span>
+                    <span className="flex items-center gap-2">
+                      <button onClick={() => loadStrategy(s.strategy)} className="rounded-md border border-edge px-2 py-1 text-xs font-semibold hover:bg-edge">
+                        Load
+                      </button>
+                      <button onClick={() => setSaved(deleteSavedStrategy(s.id))} className="text-muted hover:text-bear">
+                        ✕
+                      </button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
 
           {/* Pre-built Pine templates (merged from Indicator Studio) */}
           <PineTemplates />

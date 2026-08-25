@@ -302,6 +302,44 @@ export async function reviewJournal(payload: unknown): Promise<JournalReview> {
   };
 }
 
+export interface GapReview {
+  overview: string;
+  missedEntries: string;
+  exitDiscipline: string;
+  unsignalledTrades: string;
+  actions: string[];
+}
+
+/**
+ * Discipline-mirror narrative: Claude receives the deterministic gap findings
+ * (journal trades vs what the strategy actually signalled over the same
+ * period) and turns them into coaching. It must only discuss the supplied
+ * events — it never invents trades or signals.
+ */
+export async function reviewGaps(payload: unknown): Promise<GapReview> {
+  if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
+
+  const text = await callClaude(
+    [
+      "You are a trading discipline coach for a trading-intelligence platform.",
+      "Input: deterministic gap findings comparing the user's executed journal trades against what the platform's strategy engine signalled over the same period — missed signalled entries, entries taken with no signal, exits cut short of the signal's outcome, and quick re-entries after losses.",
+      "Discuss ONLY the supplied events and counts; never invent trades, signals, or price levels. Note: simTradesAcrossFullBacktestWindow counts simulated trades over the entire history window, most of which may predate the user's journalling — only signalsDuringJournalledPeriod and the missed_entry events represent signals the user could actually have taken. Focus on behavioral patterns: hesitation, overtrading, cutting winners, revenge trading, and consistency between the plan and execution.",
+      "If there are few or no events, say the execution tracked the strategy well and keep it brief. Educational analysis only, not financial advice.",
+      'Respond ONLY with JSON: {"overview": string, "missedEntries": string, "exitDiscipline": string, "unsignalledTrades": string, "actions": [string]}. Each string field 2-4 sentences; actions is 2-5 short behavioral rules.',
+    ].join(" "),
+    JSON.stringify(payload),
+    1400,
+  );
+  const parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as Partial<GapReview>;
+  return {
+    overview: parsed.overview ?? "",
+    missedEntries: parsed.missedEntries ?? "",
+    exitDiscipline: parsed.exitDiscipline ?? "",
+    unsignalledTrades: parsed.unsignalledTrades ?? "",
+    actions: Array.isArray(parsed.actions) ? parsed.actions.filter((a): a is string => typeof a === "string") : [],
+  };
+}
+
 export interface DailyBriefing {
   headline: string;
   marketOverview: string;

@@ -130,12 +130,15 @@ function simulate(
   config: BacktestConfig,
   minScore: number,
   getSignal: (i: number) => Opportunity | null,
+  from?: number,
+  to?: number,
 ): BacktestTrade[] {
   const trades: BacktestTrade[] = [];
   let pos: OpenPosition | null = null;
 
-  const start = Math.min(MIN_HISTORY, candles.length);
-  for (let i = start; i < candles.length; i++) {
+  const start = Math.max(from ?? 0, Math.min(MIN_HISTORY, candles.length));
+  const end = Math.min(to ?? candles.length, candles.length);
+  for (let i = start; i < end; i++) {
     const bar = candles[i];
 
     if (pos) {
@@ -171,8 +174,8 @@ function simulate(
   }
 
   if (pos) {
-    const lastBar = candles[candles.length - 1];
-    trades.push(closeTrade(pos, lastBar.close, lastBar.time, "end_of_data", candles.length - 1, config));
+    const lastBar = candles[end - 1];
+    trades.push(closeTrade(pos, lastBar.close, lastBar.time, "end_of_data", end - 1, config));
   }
   return trades;
 }
@@ -298,4 +301,132 @@ export function runBacktestSweep(
       maxDrawdownR: r.maxDrawdownR,
     };
   });
+}
+
+export interface FoldMetrics {
+  totalTrades: number;
+  winRate: number | null;
+  expectancyR: number | null;
+  totalR: number;
+  profitFactor: number | null;
+  maxDrawdownR: number;
+}
+
+export interface WalkForwardFold {
+  fold: number;
+  optimizedMinScore: number;
+  inSampleFrom: number;
+  inSampleTo: number;
+  outSampleFrom: number;
+  outSampleTo: number;
+  inSample: FoldMetrics;
+  outSample: FoldMetrics;
+}
+
+export interface WalkForwardResult {
+  symbol: string;
+  timeframe: Timeframe;
+  thresholds: number[];
+  folds: WalkForwardFold[];
+  oos: FoldMetrics; // all out-of-sample trades combined
+  oosPositiveFolds: number;
+  robust: boolean; // majority of folds profitable out-of-sample
+}
+
+function foldMetrics(trades: BacktestTrade[]): FoldMetrics {
+  const wins = trades.filter((t) => t.rMultiple > 0);
+  const losses = trades.filter((t) => t.rMultiple <= 0);
+  const grossWin = wins.reduce((s, t) => s + t.rMultiple, 0);
+  const grossLoss = Math.abs(losses.reduce((s, t) => s + t.rMultiple, 0));
+  const totalR = trades.reduce((s, t) => s + t.rMultiple, 0);
+  let cum = 0;
+  let peak = 0;
+  let maxDd = 0;
+  for (const t of trades) {
+    cum += t.rMultiple;
+    peak = Math.max(peak, cum);
+    maxDd = Math.max(maxDd, peak - cum);
+  }
+  return {
+    totalTrades: trades.length,
+    winRate: trades.length > 0 ? (100 * wins.length) / trades.length : null,
+    expectancyR: trades.length > 0 ? totalR / trades.length : null,
+    totalR: Number(totalR.toFixed(2)),
+    profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
+    maxDrawdownR: Number(maxDd.toFixed(2)),
+  };
+}
+
+/** Best threshold on the in-sample window: highest total R among thresholds with a workable sample. */
+function pickThreshold(byThreshold: { minScore: number; m: FoldMetrics }[]): number {
+  const MIN_TRADES = 5;
+  const viable = byThreshold.filter((t) => t.m.totalTrades >= MIN_TRADES);
+  const pool = viable.length > 0 ? viable : byThreshold;
+  return pool.reduce((best, t) => (t.m.totalR > best.m.totalR ? t : best)).minScore;
+}
+
+/**
+ * Anchored walk-forward validation: the tested bars are split into `folds + 1`
+ * equal segments; each fold optimizes the min-score threshold on one segment
+ * (in-sample) and then trades the next segment (out-of-sample) with that
+ * frozen threshold. Signals are computed once per bar and re-used.
+ */
+export function runWalkForward(
+  symbol: string,
+  tf: Timeframe,
+  candles: Candle[],
+  htfCandles: Candle[] | undefined,
+  htf: Timeframe | undefined,
+  config: BacktestConfig,
+  foldCount: number,
+  thresholds: number[],
+): WalkForwardResult {
+  const floor = Math.min(...thresholds);
+  const getSignal = makeSignalFn(symbol, tf, candles, htfCandles, htf, config, floor);
+  const start = Math.min(MIN_HISTORY, candles.length);
+  const signals: (Opportunity | null)[] = new Array(candles.length).fill(null);
+  for (let i = start; i < candles.length; i++) signals[i] = getSignal(i);
+
+  const usable = candles.length - start;
+  const segLen = Math.floor(usable / (foldCount + 1));
+  const folds: WalkForwardFold[] = [];
+  const oosTrades: BacktestTrade[] = [];
+
+  for (let f = 0; f < foldCount; f++) {
+    const isFrom = start + f * segLen;
+    const isTo = isFrom + segLen;
+    const oosFrom = isTo;
+    const oosTo = f === foldCount - 1 ? candles.length : oosFrom + segLen;
+
+    const byThreshold = thresholds.map((minScore) => ({
+      minScore,
+      m: foldMetrics(simulate(candles, config, minScore, (i) => signals[i], isFrom, isTo)),
+    }));
+    const best = pickThreshold(byThreshold);
+    const inSample = byThreshold.find((t) => t.minScore === best)!.m;
+    const outTrades = simulate(candles, config, best, (i) => signals[i], oosFrom, oosTo);
+    oosTrades.push(...outTrades);
+
+    folds.push({
+      fold: f + 1,
+      optimizedMinScore: best,
+      inSampleFrom: candles[isFrom]?.time ?? 0,
+      inSampleTo: candles[Math.min(isTo, candles.length) - 1]?.time ?? 0,
+      outSampleFrom: candles[oosFrom]?.time ?? 0,
+      outSampleTo: candles[Math.min(oosTo, candles.length) - 1]?.time ?? 0,
+      inSample,
+      outSample: foldMetrics(outTrades),
+    });
+  }
+
+  const oosPositiveFolds = folds.filter((f) => f.outSample.totalR > 0).length;
+  return {
+    symbol,
+    timeframe: tf,
+    thresholds,
+    folds,
+    oos: foldMetrics(oosTrades),
+    oosPositiveFolds,
+    robust: folds.length > 0 && oosPositiveFolds * 2 > folds.length,
+  };
 }
