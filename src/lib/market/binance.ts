@@ -14,11 +14,11 @@ const TF_MAP: Record<Timeframe, string> = {
   "1d": "1d", "1w": "1w",
 };
 
-// MEXC has no native 2h interval; 2h candles are aggregated from 60m pairs.
+// MEXC has no native 2h interval (aggregated from 60m) and uses uppercase 1W for weekly.
 const MEXC_TF_MAP: Record<Timeframe, string> = {
   "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
   "1h": "60m", "2h": "60m", "4h": "4h",
-  "1d": "1d", "1w": "1w",
+  "1d": "1d", "1w": "1W",
 };
 
 export const DEFAULT_CRYPTO_UNIVERSE: { symbol: string; name: string }[] = [
