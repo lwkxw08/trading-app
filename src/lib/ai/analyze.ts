@@ -316,6 +316,48 @@ export async function reviewJournal(payload: unknown): Promise<JournalReview> {
   };
 }
 
+export interface BacktestReview {
+  overview: string;
+  edgeAssessment: string;
+  regimeAdvice: string;
+  exitAnalysis: string;
+  refinements: string[];
+  caveats: string;
+}
+
+/**
+ * Strategy-tightening review of a backtest run: Claude receives the run's
+ * config, aggregate metrics, per-regime breakdown and a sample of trades, and
+ * suggests concrete parameter/filter changes. It must only reference
+ * conditions the deterministic engine supports and never invent results.
+ */
+export async function reviewBacktest(payload: unknown): Promise<BacktestReview> {
+  if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
+
+  const supported = CONDITION_LIBRARY.map((c) => c.label).join(", ");
+  const text = await callClaude(
+    [
+      "You are a quantitative strategy reviewer for a trading-intelligence platform.",
+      "Input: a backtest run — the strategy configuration (built-in confluence threshold, or custom conditions with weights and min score, direction filter, max hold bars, fees/slippage), aggregate metrics (win rate, avg R, expectancy, profit factor, max drawdown), performance split by market regime at entry, exit-reason breakdown, and a sample of individual trades (R multiple, exit reason, hold bars, regime, score at entry).",
+      "Diagnose where the strategy leaks money and how to tighten it: regimes to filter out or trade only, whether the min score threshold should move, direction bias, whether losers are stop-outs vs time exits (hold-time or target sizing issues), and score-vs-outcome patterns.",
+      `When suggesting refinements, only reference parameters and conditions the platform supports: min score threshold, direction filter (long/short/both), max hold bars, regime filtering, and these conditions: ${supported}. Refinements must be specific and testable (e.g. "raise min score to 65", "trade long-only", "skip volatile regime entries"), not platitudes.`,
+      "Warn about overfitting: small samples (under ~30 trades), or tuning to one symbol/timeframe/window. Recommend validating changes with the platform's walk-forward tool. Educational analysis only, not financial advice.",
+      'Respond ONLY with JSON: {"overview": string, "edgeAssessment": string, "regimeAdvice": string, "exitAnalysis": string, "refinements": [string], "caveats": string}. Each string field 2-4 sentences; refinements is 3-6 short actionable items.',
+    ].join(" "),
+    JSON.stringify(payload),
+    1800,
+  );
+  const parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as Partial<BacktestReview>;
+  return {
+    overview: parsed.overview ?? "",
+    edgeAssessment: parsed.edgeAssessment ?? "",
+    regimeAdvice: parsed.regimeAdvice ?? "",
+    exitAnalysis: parsed.exitAnalysis ?? "",
+    refinements: Array.isArray(parsed.refinements) ? parsed.refinements.filter((r): r is string => typeof r === "string") : [],
+    caveats: parsed.caveats ?? "",
+  };
+}
+
 export interface GapReview {
   overview: string;
   missedEntries: string;

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
+import type { BacktestReview } from "@/lib/ai/analyze";
 import type { BacktestResult, SweepPoint, WalkForwardResult } from "@/lib/backtest/engine";
 import { REGIME_LABELS } from "@/lib/strategies/regime";
 import { runMonteCarlo } from "@/lib/backtest/montecarlo";
@@ -79,6 +80,9 @@ export default function BacktestPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedRuns, setSavedRuns] = useState<SavedRun[]>([]);
+  const [aiReview, setAiReview] = useState<BacktestReview | null>(null);
+  const [aiReviewLoading, setAiReviewLoading] = useState(false);
+  const [aiReviewError, setAiReviewError] = useState<string | null>(null);
   const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
   const [riskPct, setRiskPct] = useState(1);
 
@@ -113,6 +117,8 @@ export default function BacktestPage() {
       setResult(null);
       setSweep(null);
       setWalkforward(null);
+      setAiReview(null);
+      setAiReviewError(null);
       fetch(apiUrl("/api/backtest"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -143,6 +149,62 @@ export default function BacktestPage() {
     },
     [symbol, tf, strategyType, custom, minScore, direction, maxHoldBars, bars, feePct, slippagePct],
   );
+
+  const runAiReview = useCallback(() => {
+    if (!result) return;
+    setAiReviewLoading(true);
+    setAiReviewError(null);
+    setAiReview(null);
+    fetch(apiUrl("/api/backtest/review"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        symbol: result.symbol,
+        timeframe: result.timeframe,
+        config: {
+          strategyType,
+          minScore: strategyType === "custom" ? customMinScore : minScore,
+          direction,
+          maxHoldBars,
+          feePct,
+          slippagePct,
+          conditions:
+            strategyType === "custom"
+              ? custom.conditions.map((c) => ({ label: CONDITION_LIBRARY.find((x) => x.id === c.id)?.label ?? c.id, weight: c.weight }))
+              : null,
+        },
+        metrics: {
+          barsTested: result.barsTested,
+          totalTrades: result.totalTrades,
+          wins: result.wins,
+          losses: result.losses,
+          winRate: result.winRate,
+          avgR: result.avgR,
+          expectancyR: result.expectancyR,
+          totalR: result.totalR,
+          profitFactor: result.profitFactor,
+          maxDrawdownR: result.maxDrawdownR,
+          avgHoldBars: result.avgHoldBars,
+        },
+        byRegime: result.byRegime,
+        trades: result.trades.slice(-120).map((t) => ({
+          direction: t.direction,
+          rMultiple: t.rMultiple,
+          exitReason: t.exitReason,
+          holdBars: t.holdBars,
+          score: t.score,
+          regime: t.regime,
+        })),
+      }),
+    })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error ?? "AI review failed");
+        setAiReview(d.review);
+      })
+      .catch((e) => setAiReviewError(e.message))
+      .finally(() => setAiReviewLoading(false));
+  }, [result, strategyType, custom, customMinScore, minScore, direction, maxHoldBars, feePct, slippagePct]);
 
   const monteCarlo = useMemo(
     () => (result && result.totalTrades >= 5 ? runMonteCarlo(result.trades.map((t) => t.rMultiple), riskPct) : null),
@@ -570,9 +632,19 @@ export default function BacktestPage() {
                   <h2 className="font-semibold">
                     Results — {result.symbol} · {result.timeframe} · {result.barsTested} bars ({fmtTime(result.firstBarTime)} → {fmtTime(result.lastBarTime)})
                   </h2>
-                  <button onClick={saveRun} className="rounded-md border border-edge px-3 py-1 text-xs font-semibold hover:bg-edge">
-                    Save run
-                  </button>
+                  <span className="flex gap-2">
+                    <button
+                      onClick={runAiReview}
+                      disabled={aiReviewLoading}
+                      className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                      title="AI reviews this run's metrics, regimes and trades and suggests ways to tighten the strategy"
+                    >
+                      {aiReviewLoading ? "Reviewing…" : "AI review"}
+                    </button>
+                    <button onClick={saveRun} className="rounded-md border border-edge px-3 py-1 text-xs font-semibold hover:bg-edge">
+                      Save run
+                    </button>
+                  </span>
                 </div>
                 <div className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
                   <Metric label="Trades" value={String(result.totalTrades)} />
@@ -621,6 +693,36 @@ export default function BacktestPage() {
                   <p className="mt-2 text-xs text-muted">Small sample — treat these numbers as indicative only.</p>
                 )}
               </section>
+
+              {(aiReview || aiReviewError) && (
+                <section className="rounded-lg border border-edge bg-surface p-4">
+                  <h2 className="font-semibold">AI strategy review</h2>
+                  {aiReviewError ? (
+                    <p className="mt-2 text-xs text-bear">{aiReviewError}</p>
+                  ) : aiReview ? (
+                    <div className="mt-2 space-y-3 text-sm">
+                      <ReviewBlock label="Overview" text={aiReview.overview} />
+                      <ReviewBlock label="Edge assessment" text={aiReview.edgeAssessment} />
+                      <ReviewBlock label="Regime advice" text={aiReview.regimeAdvice} />
+                      <ReviewBlock label="Exit analysis" text={aiReview.exitAnalysis} />
+                      {aiReview.refinements.length > 0 && (
+                        <div>
+                          <h3 className="text-xs font-semibold uppercase text-muted">Suggested refinements</h3>
+                          <ul className="mt-1 list-disc space-y-1 pl-5 text-sm">
+                            {aiReview.refinements.map((r, i) => (
+                              <li key={i}>{r}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      <ReviewBlock label="Caveats" text={aiReview.caveats} />
+                      <p className="text-[10px] text-muted">
+                        AI suggestions are hypotheses — re-run the backtest and walk-forward validation after any change. Educational analysis only, not financial advice.
+                      </p>
+                    </div>
+                  ) : null}
+                </section>
+              )}
 
               <section className="rounded-lg border border-edge bg-surface p-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -852,6 +954,16 @@ export default function BacktestPage() {
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ReviewBlock({ label, text }: { label: string; text: string }) {
+  if (!text) return null;
+  return (
+    <div>
+      <h3 className="text-xs font-semibold uppercase text-muted">{label}</h3>
+      <p className="mt-1 whitespace-pre-wrap text-sm">{text}</p>
     </div>
   );
 }
