@@ -303,6 +303,32 @@ export default function BacktestPage() {
               </div>
             ) : (
               <div className="space-y-2">
+                {savedStrategies.length > 0 && (
+                  <select
+                    value=""
+                    onChange={(e) => {
+                      const s = savedStrategies.find((x) => x.id === e.target.value);
+                      if (!s) return;
+                      setConditions(
+                        Object.fromEntries(
+                          CONDITION_LIBRARY.map((c) => {
+                            const cond = s.strategy.conditions.find((x) => x.id === c.id);
+                            return [c.id, { enabled: !!cond, weight: cond?.weight ?? c.defaultWeight }];
+                          }),
+                        ) as Record<ConditionId, ConditionState>,
+                      );
+                      setCustomMinScore(s.strategy.minScore);
+                    }}
+                    className={inputCls}
+                  >
+                    <option value="">Load saved strategy…</option>
+                    {savedStrategies.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.strategy.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <div className="max-h-64 space-y-1 overflow-auto pr-1">
                   {CONDITION_LIBRARY.map((c) => {
                     const st = conditions[c.id];
