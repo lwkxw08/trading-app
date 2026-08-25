@@ -1,4 +1,5 @@
 import type { Candle, Timeframe } from "@/lib/market/types";
+import type { RegimeLabel, RegimeState } from "./regime";
 
 export type Direction = "bullish" | "bearish";
 
@@ -149,6 +150,7 @@ export interface StrategyAnalysis {
   sessionLevels: SessionLevels;
   trend: TrendState;
   higherTimeframeTrend?: TrendState;
+  regime: RegimeState;
 }
 
 export interface ConfluenceFactor {
@@ -168,4 +170,5 @@ export interface Opportunity {
   takeProfit: number;
   riskRewardRatio: number;
   generatedAt: number;
+  regime?: RegimeLabel;
 }

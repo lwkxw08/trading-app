@@ -2,6 +2,7 @@ import type { Candle, Timeframe } from "@/lib/market/types";
 import { scoreOpportunities } from "@/lib/strategies/confluence";
 import { evaluateCustomStrategy, type CustomStrategy } from "@/lib/strategies/custom";
 import { analyze } from "@/lib/strategies/engine";
+import type { RegimeLabel } from "@/lib/strategies/regime";
 import type { Opportunity } from "@/lib/strategies/types";
 
 /**
@@ -36,6 +37,17 @@ export interface BacktestTrade {
   returnPct: number;
   score: number;
   holdBars: number;
+  regime: RegimeLabel | null; // market regime at entry
+}
+
+export interface RegimeBucket {
+  regime: RegimeLabel;
+  trades: number;
+  wins: number;
+  winRate: number | null;
+  avgR: number | null;
+  totalR: number;
+  profitFactor: number | null;
 }
 
 export interface BacktestResult {
@@ -56,6 +68,7 @@ export interface BacktestResult {
   maxDrawdownR: number;
   avgHoldBars: number | null;
   equityCurve: { time: number; r: number }[]; // cumulative R after each closed trade
+  byRegime: RegimeBucket[]; // performance split by market regime at entry
 }
 
 const WINDOW = 300; // engine sees at most this many bars at each step
@@ -69,6 +82,7 @@ interface OpenPosition {
   takeProfit: number;
   score: number;
   entryIndex: number;
+  regime: RegimeLabel | null;
 }
 
 function signalAt(
@@ -122,6 +136,7 @@ function closeTrade(
     returnPct: (100 * pnl) / pos.entryPrice,
     score: pos.score,
     holdBars: exitIndex - pos.entryIndex,
+    regime: pos.regime,
   };
 }
 
@@ -169,6 +184,7 @@ function simulate(
         takeProfit: signal.takeProfit,
         score: signal.score,
         entryIndex: i,
+        regime: signal.regime ?? null,
       };
     }
   }
@@ -217,7 +233,34 @@ function summarize(symbol: string, tf: Timeframe, candles: Candle[], trades: Bac
     maxDrawdownR: Number(maxDd.toFixed(2)),
     avgHoldBars: trades.length > 0 ? trades.reduce((s, t) => s + t.holdBars, 0) / trades.length : null,
     equityCurve,
+    byRegime: regimeBuckets(trades),
   };
+}
+
+function regimeBuckets(trades: BacktestTrade[]): RegimeBucket[] {
+  const map = new Map<RegimeLabel, BacktestTrade[]>();
+  for (const t of trades) {
+    if (t.regime === null) continue;
+    map.set(t.regime, [...(map.get(t.regime) ?? []), t]);
+  }
+  return [...map.entries()]
+    .map(([regime, items]) => {
+      const wins = items.filter((t) => t.rMultiple > 0);
+      const losses = items.filter((t) => t.rMultiple <= 0);
+      const grossWin = wins.reduce((s, t) => s + t.rMultiple, 0);
+      const grossLoss = Math.abs(losses.reduce((s, t) => s + t.rMultiple, 0));
+      const totalR = items.reduce((s, t) => s + t.rMultiple, 0);
+      return {
+        regime,
+        trades: items.length,
+        wins: wins.length,
+        winRate: items.length > 0 ? (100 * wins.length) / items.length : null,
+        avgR: items.length > 0 ? totalR / items.length : null,
+        totalR: Number(totalR.toFixed(2)),
+        profitFactor: grossLoss > 0 ? grossWin / grossLoss : null,
+      };
+    })
+    .sort((a, b) => b.trades - a.trades);
 }
 
 /** Builds a per-bar signal function; must be called with increasing bar indices. */

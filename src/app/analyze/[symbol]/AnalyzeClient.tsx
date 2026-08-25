@@ -10,12 +10,16 @@ import PriceChart, { type LevelLine, type ProfileOverlay, type SetupOverlay, typ
 import TradePlanBuilder from "@/components/TradePlanBuilder";
 import MtfDashboard from "@/components/MtfDashboard";
 import { useLiveKline } from "@/components/useLiveMarket";
-import { fmtPrice } from "@/components/format";
+import { fmtPrice, timeAgo } from "@/components/format";
 import type { AiAnalysis } from "@/lib/ai/analyze";
+import { buildPatternMemory } from "@/lib/ai/memory";
+import { loadSignals } from "@/lib/signals/store";
 import { addDrawing, clearDrawings, loadDrawings } from "@/lib/drawings/store";
 import { loadTrades, saveTrades } from "@/lib/journal/store";
 import type { JournalTrade } from "@/lib/journal/types";
 import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
+import type { NewsHeadline } from "@/lib/news/provider";
+import { REGIME_LABELS } from "@/lib/strategies/regime";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
@@ -54,6 +58,15 @@ export default function AnalyzeSymbol() {
   const [loggedSetups, setLoggedSetups] = useState<Set<string>>(new Set());
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
+  const [news, setNews] = useState<NewsHeadline[]>([]);
+
+  useEffect(() => {
+    setNews([]);
+    fetch(apiUrl(`/api/news?symbol=${symbol}`))
+      .then((r) => r.json())
+      .then((d) => setNews(Array.isArray(d.headlines) ? d.headlines : []))
+      .catch(() => {});
+  }, [symbol]);
 
   useEffect(() => {
     setDrawings(loadDrawings(symbol));
@@ -135,10 +148,11 @@ export default function AnalyzeSymbol() {
   const runAi = useCallback(() => {
     setAiLoading(true);
     setAiError(null);
+    const memory = buildPatternMemory(loadSignals(), loadTrades(), symbol, tf);
     fetch(apiUrl("/api/ai/analyze"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol, tf }),
+      body: JSON.stringify({ symbol, tf, memory }),
     })
       .then(async (r) => {
         const d = await r.json();
@@ -250,6 +264,22 @@ export default function AnalyzeSymbol() {
               }`}
             >
               {analysis.trend.direction} trend
+            </span>
+          )}
+          {analysis && (
+            <span
+              title={analysis.regime.detail}
+              className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                analysis.regime.regime === "trending_up"
+                  ? "bg-bull/15 text-bull"
+                  : analysis.regime.regime === "trending_down"
+                    ? "bg-bear/15 text-bear"
+                    : analysis.regime.regime === "volatile"
+                      ? "bg-amber-500/15 text-amber-400"
+                      : "bg-edge text-muted"
+              }`}
+            >
+              {REGIME_LABELS[analysis.regime.regime]}
             </span>
           )}
         </div>
@@ -383,6 +413,27 @@ export default function AnalyzeSymbol() {
           </section>
 
           <AiChat symbol={symbol} tf={tf} />
+
+          {news.length > 0 && (
+            <section className="rounded-lg border border-edge bg-surface p-4">
+              <h2 className="font-semibold">Recent headlines</h2>
+              <p className="mt-1 text-xs text-muted">News context for {symbol} — also fed to the AI analysis. Headlines are context, not signals.</p>
+              <ul className="mt-3 space-y-2 text-sm">
+                {news.slice(0, 6).map((h, i) => (
+                  <li key={i} className="flex items-baseline gap-2">
+                    <span className="shrink-0 text-[10px] text-muted">{timeAgo(h.publishedAt)}</span>
+                    {h.url ? (
+                      <a href={h.url} target="_blank" rel="noreferrer" className="hover:text-accent hover:underline">
+                        {h.title}
+                      </a>
+                    ) : (
+                      <span>{h.title}</span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </div>
 
         <div className="space-y-4">
@@ -501,6 +552,10 @@ export default function AnalyzeSymbol() {
                   <li>LVNs: {analysis.volumeProfile.lvns.map((nd) => fmtPrice(nd.price)).join(", ")}</li>
                 )}
                 <li>RSI(14): {analysis.trend.rsi14?.toFixed(1) ?? "—"}</li>
+                <li>
+                  Regime: {REGIME_LABELS[analysis.regime.regime]}
+                  {analysis.regime.adx14 !== null && ` · ADX ${analysis.regime.adx14.toFixed(0)}`}
+                </li>
                 {analysis.higherTimeframeTrend && (
                   <li>
                     HTF ({analysis.higherTimeframeTrend.timeframe}): {analysis.higherTimeframeTrend.direction}

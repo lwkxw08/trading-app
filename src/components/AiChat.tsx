@@ -2,7 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 import { apiUrl } from "./api";
+import { buildPatternMemory } from "@/lib/ai/memory";
+import { loadTrades } from "@/lib/journal/store";
 import type { Timeframe } from "@/lib/market/types";
+import { loadSignals } from "@/lib/signals/store";
 
 interface Turn {
   role: "user" | "assistant";
@@ -43,7 +46,7 @@ export default function AiChat({ symbol, tf }: { symbol: string; tf: Timeframe }
     fetch(apiUrl("/api/ai/chat"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ symbol, tf, messages: next }),
+      body: JSON.stringify({ symbol, tf, messages: next, memory: buildPatternMemory(loadSignals(), loadTrades(), symbol, tf) }),
     })
       .then(async (r) => {
         const d = await r.json();

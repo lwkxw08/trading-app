@@ -6,9 +6,12 @@ import { apiUrl } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
 import type { GapReview, JournalReview } from "@/lib/ai/analyze";
 import type { GapFindings } from "@/lib/journal/gap";
+import { usePrices } from "@/components/usePrices";
+import { DEFAULT_RULES, dueActions, openR } from "@/lib/journal/manage";
 import { computeStats, loadTrades, saveTrades, tradeMetrics } from "@/lib/journal/store";
-import type { JournalTrade, MarketSnapshot } from "@/lib/journal/types";
+import type { JournalTrade, ManagementRules, MarketSnapshot } from "@/lib/journal/types";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
+import { findCorrelationWarnings } from "@/lib/risk/correlation";
 import type { Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = { analysis: Omit<StrategyAnalysis, "candles">; opportunities: Opportunity[] };
@@ -52,6 +55,29 @@ export default function JournalPage() {
   }, []);
 
   const stats = useMemo(() => computeStats(trades), [trades]);
+
+  const openTrades = useMemo(() => trades.filter((t) => t.status === "open"), [trades]);
+  const prices = usePrices(useMemo(() => openTrades.map((t) => t.symbol), [openTrades]));
+  const correlationWarnings = useMemo(() => findCorrelationWarnings(openTrades), [openTrades]);
+  const [managing, setManaging] = useState<string | null>(null);
+
+  const updateRules = useCallback(
+    (id: string, patch: Partial<ManagementRules>) => {
+      persist(
+        trades.map((t) =>
+          t.id === id ? { ...t, management: { ...(t.management ?? DEFAULT_RULES), ...patch } } : t,
+        ),
+      );
+    },
+    [trades, persist],
+  );
+
+  const applyStop = useCallback(
+    (id: string, stop: number) => {
+      persist(trades.map((t) => (t.id === id ? { ...t, stopLoss: stop } : t)));
+    },
+    [trades, persist],
+  );
 
   const addTrade = useCallback(async () => {
     const entry = Number(entryPrice);
@@ -263,6 +289,26 @@ export default function JournalPage() {
             </div>
           </section>
 
+          {/* Correlation warnings */}
+          {correlationWarnings.length > 0 && (
+            <section className="rounded-lg border border-amber-500/40 bg-surface p-4">
+              <h2 className="font-semibold">Correlation warnings</h2>
+              <p className="mt-1 text-xs text-muted">
+                Based on structural relationships (USD legs, BTC beta, index overlap) — approximate and advisory, not live correlation.
+              </p>
+              <ul className="mt-2 space-y-2 text-sm">
+                {correlationWarnings.map((w, i) => (
+                  <li key={i} className="flex items-start gap-2">
+                    <span className={`mt-0.5 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${w.severity === "high" ? "bg-bear/20 text-bear" : "bg-amber-500/20 text-amber-400"}`}>
+                      {w.severity}
+                    </span>
+                    <span className="text-xs">{w.message}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
+
           {/* Trades */}
           <section className="rounded-lg border border-edge bg-surface p-4">
             <h2 className="font-semibold">Trades</h2>
@@ -304,8 +350,62 @@ export default function JournalPage() {
                       {t.exitPrice !== null && <span>Exit {fmtPrice(t.exitPrice)}</span>}
                     </div>
                     <p className="mt-1 text-xs text-muted">{fmtTime(Math.floor(t.entryTime / 1000))}{t.notes && ` — ${t.notes}`}</p>
-                    {t.status === "open" && (
-                      <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-edge pt-2">
+                    {t.status === "open" && (() => {
+                      const price = prices[t.symbol];
+                      const r = price !== undefined ? openR(t, price) : null;
+                      const actions = price !== undefined ? dueActions(t, price) : [];
+                      const rules = t.management ?? null;
+                      return (
+                        <div className="mt-2 border-t border-edge pt-2">
+                          <div className="flex flex-wrap items-center gap-3 text-xs">
+                            {price !== undefined && (
+                              <span className="font-mono text-muted">
+                                Now {fmtPrice(price)}
+                                {r !== null && (
+                                  <span className={r >= 0 ? "text-bull" : "text-bear"}> · {r >= 0 ? "+" : ""}{r.toFixed(2)}R</span>
+                                )}
+                              </span>
+                            )}
+                            <button
+                              onClick={() => setManaging((cur) => (cur === t.id ? null : t.id))}
+                              className="rounded-md border border-edge px-2 py-0.5 font-semibold hover:bg-edge"
+                            >
+                              {rules ? "Manage rules" : "Add management rules"}
+                            </button>
+                          </div>
+                          {actions.length > 0 && (
+                            <ul className="mt-2 space-y-1">
+                              {actions.map((a, i) => (
+                                <li key={i} className="flex flex-wrap items-center gap-2 rounded-md bg-background px-2 py-1 text-xs">
+                                  <span className="font-semibold text-amber-400">{a.label}</span>
+                                  <span className="text-muted">{a.detail}</span>
+                                  {a.suggestedStop !== undefined && (
+                                    <button
+                                      onClick={() => applyStop(t.id, a.suggestedStop!)}
+                                      className="rounded border border-edge px-1.5 py-0.5 font-semibold hover:bg-edge"
+                                    >
+                                      Apply stop {fmtPrice(a.suggestedStop)}
+                                    </button>
+                                  )}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                          {managing === t.id && (
+                            <div className="mt-2 rounded-md bg-background p-2">
+                              <p className="text-[10px] uppercase text-muted">Management rules (advisory — nothing is executed automatically; R measured entry→stop)</p>
+                              <div className="mt-1 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                                <RuleInput label="Break-even at +R" value={rules?.breakEvenAtR ?? null} onChange={(v) => updateRules(t.id, { breakEvenAtR: v })} />
+                                <RuleInput label="Trail from +R" value={rules?.trailAtR ?? null} onChange={(v) => updateRules(t.id, { trailAtR: v })} />
+                                <RuleInput label="Trail distance (R)" value={rules?.trailDistanceR ?? null} onChange={(v) => updateRules(t.id, { trailDistanceR: v })} />
+                                <RuleInput label="Scale out at +R" value={rules?.scaleOutAtR ?? null} onChange={(v) => updateRules(t.id, { scaleOutAtR: v })} />
+                                <RuleInput label="Scale out %" value={rules?.scaleOutPct ?? null} onChange={(v) => updateRules(t.id, { scaleOutPct: v })} />
+                                <RuleInput label="Scale in at +R" value={rules?.scaleInAtR ?? null} onChange={(v) => updateRules(t.id, { scaleInAtR: v })} />
+                                <RuleInput label="Scale in %" value={rules?.scaleInPct ?? null} onChange={(v) => updateRules(t.id, { scaleInPct: v })} />
+                              </div>
+                            </div>
+                          )}
+                          <div className="mt-2 flex flex-wrap items-center gap-2">
                         <input
                           value={c?.exitPrice ?? ""}
                           onChange={(e) => setClosing((prev) => ({ ...prev, [t.id]: { exitPrice: e.target.value, exitNotes: prev[t.id]?.exitNotes ?? "" } }))}
@@ -324,10 +424,12 @@ export default function JournalPage() {
                           disabled={!c?.exitPrice}
                           className="rounded-md border border-edge px-3 py-1 text-xs font-semibold hover:bg-edge disabled:opacity-50"
                         >
-                          Close trade
-                        </button>
-                      </div>
-                    )}
+                              Close trade
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
@@ -507,6 +609,24 @@ function Stat({ label, value }: { label: string; value: string }) {
       <div className="text-[10px] uppercase text-muted">{label}</div>
       <div className="text-sm font-semibold">{value}</div>
     </div>
+  );
+}
+
+function RuleInput({ label, value, onChange }: { label: string; value: number | null; onChange: (v: number | null) => void }) {
+  return (
+    <label className="text-[10px] text-muted">
+      {label}
+      <input
+        value={value ?? ""}
+        onChange={(e) => {
+          const n = Number(e.target.value);
+          onChange(e.target.value === "" || !Number.isFinite(n) ? null : n);
+        }}
+        inputMode="decimal"
+        placeholder="—"
+        className="mt-0.5 w-full rounded-md border border-edge bg-surface px-2 py-1 font-mono text-xs text-foreground outline-none focus:border-accent"
+      />
+    </label>
   );
 }
 

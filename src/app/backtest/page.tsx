@@ -5,6 +5,7 @@ import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
 import type { BacktestResult, SweepPoint, WalkForwardResult } from "@/lib/backtest/engine";
+import { REGIME_LABELS } from "@/lib/strategies/regime";
 import { runMonteCarlo } from "@/lib/backtest/montecarlo";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy } from "@/lib/strategies/custom";
@@ -558,6 +559,38 @@ export default function BacktestPage() {
                   <Metric label="Avg hold" value={result.avgHoldBars !== null ? `${result.avgHoldBars.toFixed(0)} bars` : "—"} />
                 </div>
                 {result.equityCurve.length > 1 && <EquityCurve curve={result.equityCurve} />}
+                {result.byRegime && result.byRegime.length > 0 && (
+                  <div className="mt-3">
+                    <h3 className="text-xs font-semibold uppercase text-muted">Performance by market regime at entry</h3>
+                    <table className="mt-1 w-full text-left text-xs">
+                      <thead className="text-muted">
+                        <tr>
+                          <th className="py-1 pr-3 font-medium">Regime</th>
+                          <th className="py-1 pr-3 font-medium">Trades</th>
+                          <th className="py-1 pr-3 font-medium">Win rate</th>
+                          <th className="py-1 pr-3 font-medium">Avg R</th>
+                          <th className="py-1 pr-3 font-medium">Total R</th>
+                          <th className="py-1 font-medium">PF</th>
+                        </tr>
+                      </thead>
+                      <tbody className="font-mono">
+                        {result.byRegime.map((b) => (
+                          <tr key={b.regime} className="border-t border-edge">
+                            <td className="py-1 pr-3 font-sans">{REGIME_LABELS[b.regime]}</td>
+                            <td className="py-1 pr-3">{b.trades}</td>
+                            <td className="py-1 pr-3">{b.winRate !== null ? `${b.winRate.toFixed(0)}%` : "—"}</td>
+                            <td className={`py-1 pr-3 ${(b.avgR ?? 0) > 0 ? "text-bull" : (b.avgR ?? 0) < 0 ? "text-bear" : ""}`}>
+                              {b.avgR !== null ? b.avgR.toFixed(2) : "—"}
+                            </td>
+                            <td className="py-1 pr-3">{b.totalR >= 0 ? "+" : ""}{b.totalR.toFixed(2)}R</td>
+                            <td className="py-1">{b.profitFactor !== null ? b.profitFactor.toFixed(2) : "—"}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="mt-1 text-[10px] text-muted">Regime is classified from ADX/ATR at each entry bar — a probabilistic read, not a prediction.</p>
+                  </div>
+                )}
                 {result.totalTrades < 10 && (
                   <p className="mt-2 text-xs text-muted">Small sample — treat these numbers as indicative only.</p>
                 )}

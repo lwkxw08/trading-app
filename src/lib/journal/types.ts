@@ -9,6 +9,18 @@ export interface MarketSnapshot {
   factors: ConfluenceFactor[]; // confluence factors at entry
 }
 
+/** Advisory management rules for an open trade. Never executed automatically —
+ * the app only tells you when an action is due. R is measured entry→stop. */
+export interface ManagementRules {
+  breakEvenAtR: number | null; // move stop to entry once price reaches +X R
+  trailAtR: number | null; // start trailing once price reaches +X R
+  trailDistanceR: number | null; // trail the stop this many R behind the best price
+  scaleInAtR: number | null; // planned add once price reaches +X R
+  scaleInPct: number | null; // % of original size to add
+  scaleOutAtR: number | null; // take partial profit once price reaches +X R
+  scaleOutPct: number | null; // % of position to scale out
+}
+
 export interface JournalTrade {
   id: string;
   symbol: string;
@@ -26,6 +38,7 @@ export interface JournalTrade {
   exitPrice: number | null;
   exitTime: number | null;
   exitNotes: string;
+  management?: ManagementRules | null;
 }
 
 export interface ClosedTradeMetrics {

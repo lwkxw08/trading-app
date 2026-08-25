@@ -162,7 +162,26 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
     }
   }
 
-  // 12. Macro risk window: penalize when high-impact events are near
+  // 12. Regime fit: trend-continuation setups work in trends and degrade in
+  // ranges; volatility expansion argues for caution either way
+  const regime = a.regime;
+  if (regime.regime === "trending_up" || regime.regime === "trending_down") {
+    const regimeAgrees = (regime.regime === "trending_up") === wantBullish;
+    factors.push(
+      regimeAgrees
+        ? { name: "Regime Fit", detail: `${regime.detail} — aligned with this direction`, weight: 8 }
+        : { name: "Regime Conflict", detail: `${regime.detail} — against this direction`, weight: -8 },
+    );
+  } else if (regime.regime === "volatile") {
+    factors.push({ name: "Volatile Regime", detail: regime.detail, weight: -6 });
+  } else {
+    const atRangeEdge = (wantBullish && price <= vp.val + near) || (!wantBullish && price >= vp.vah - near);
+    if (!atRangeEdge) {
+      factors.push({ name: "Ranging Regime", detail: `${regime.detail} — entry is mid-range, not at a range edge`, weight: -5 });
+    }
+  }
+
+  // 13. Macro risk window: penalize when high-impact events are near
   const soon = Date.now() + 12 * 3600 * 1000;
   const riskyEvents = events.filter((e) => e.impact === "high" && e.timestamp * 1000 > Date.now() && e.timestamp * 1000 < soon);
   if (riskyEvents.length > 0) {
@@ -191,6 +210,7 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
     takeProfit,
     riskRewardRatio,
     generatedAt: Date.now(),
+    regime: a.regime.regime,
   };
 }
 

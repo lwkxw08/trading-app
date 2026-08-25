@@ -1,4 +1,6 @@
+import type { PatternMemory } from "@/lib/ai/memory";
 import type { EconomicEvent } from "@/lib/calendar/types";
+import type { NewsHeadline } from "@/lib/news/provider";
 import { CONDITION_LIBRARY, isConditionId, type CustomStrategy } from "@/lib/strategies/custom";
 import type { Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
@@ -62,6 +64,8 @@ export async function generateAnalysis(
   analysis: StrategyAnalysis,
   opportunities: Opportunity[],
   events: EconomicEvent[],
+  memory?: PatternMemory | null,
+  headlines?: NewsHeadline[],
 ): Promise<AiAnalysis> {
   if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
 
@@ -86,12 +90,18 @@ export async function generateAnalysis(
     upcomingHighImpactEvents: events
       .filter((e) => e.impact === "high" && e.timestamp * 1000 > Date.now())
       .slice(0, 10),
+    marketRegime: { regime: analysis.regime.regime, adx14: analysis.regime.adx14, atrPercentile: analysis.regime.atrPercentile, detail: analysis.regime.detail },
+    userPatternMemory: memory ?? undefined,
+    recentHeadlines: headlines && headlines.length > 0 ? headlines.slice(0, 10) : undefined,
   };
 
   const text = await callClaude(
     [
       "You are a professional market analyst for a trading-intelligence platform.",
-      "You are given deterministic, pre-computed technical structures (fair value gaps, order blocks, volume profile, trend state, swing points, liquidity sweeps, BOS/CHoCH structure breaks, anchored VWAP, session levels) and upcoming economic events.",
+      "You are given deterministic, pre-computed technical structures (fair value gaps, order blocks, volume profile, trend state, swing points, liquidity sweeps, BOS/CHoCH structure breaks, anchored VWAP, session levels), a market regime classification, and upcoming economic events.",
+      "The regime is a probabilistic classification of current conditions, never a prediction.",
+      "userPatternMemory, when present, is the user's own historical performance (resolved signal outcomes and journal trades). Use it to tailor advice — e.g. flag when a setup relies on factors that have historically underperformed for this user — but treat small samples (under ~10 outcomes) as weak evidence and say so.",
+      "recentHeadlines, when present, are recent news headlines for context only — reference them cautiously in macroContext and never derive price levels or certainty from them.",
       "Never invent price levels — only reference levels present in the input.",
       "This is analysis and education, NOT financial advice; keep language framed as scenarios and invalidation levels.",
       "Respond ONLY with JSON matching: {\"thesis\": string, \"bullCase\": string, \"bearCase\": string, \"keyLevels\": string, \"macroContext\": string, \"riskNotes\": string}. Each field 1-3 sentences, concrete and specific.",
@@ -163,6 +173,7 @@ export async function chatOnAnalysis(
   opportunities: Opportunity[],
   events: EconomicEvent[],
   messages: ChatTurn[],
+  memory?: PatternMemory | null,
 ): Promise<string> {
   if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
 
@@ -187,11 +198,14 @@ export async function chatOnAnalysis(
     upcomingHighImpactEvents: events
       .filter((e) => e.impact === "high" && e.timestamp * 1000 > Date.now())
       .slice(0, 10),
+    marketRegime: { regime: analysis.regime.regime, adx14: analysis.regime.adx14, atrPercentile: analysis.regime.atrPercentile, detail: analysis.regime.detail },
+    userPatternMemory: memory ?? undefined,
   };
 
   return callClaudeMessages(
     [
       "You are a market analyst answering follow-up questions about one symbol's technical analysis on a trading-intelligence platform.",
+      "userPatternMemory, when present, is the user's own historical performance stats; use it to personalise answers but treat small samples (under ~10 outcomes) as weak evidence and say so.",
       "You are given deterministic, pre-computed technical structures (fair value gaps, order blocks, volume profile, trend state, swing points, liquidity sweeps, BOS/CHoCH structure breaks, anchored VWAP, session levels), confluence-scored setups with their factor breakdowns, and upcoming economic events.",
       "Answer strictly from this data. Never invent price levels — only reference levels present in the input. If the data cannot answer the question, say so.",
       "Explain how the confluence score is composed of its listed factors when asked why something scores as it does; discuss invalidation in terms of the provided stop, structure and levels.",
@@ -351,13 +365,15 @@ export async function generateBriefing(
   tickers: { symbol: string; lastPrice: number; change24hPct: number }[],
   opportunities: Opportunity[],
   events: EconomicEvent[],
+  headlines?: NewsHeadline[],
 ): Promise<DailyBriefing> {
   if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
 
   const text = await callClaude(
     [
       "You write the daily market briefing for a trading-intelligence platform.",
-      "Input: 24h market movers, top confluence-scored setups from a deterministic strategy engine, and upcoming high-impact economic events.",
+      "Input: 24h market movers, top confluence-scored setups from a deterministic strategy engine, upcoming high-impact economic events, and optionally recent news headlines.",
+      "Headlines are context only — reference them cautiously in marketOverview and never derive certainty from them.",
       "Analysis and education only, not financial advice.",
       "Respond ONLY with JSON: {\"headline\": string, \"marketOverview\": string, \"eventWatch\": string, \"topSetups\": string}. headline is one punchy sentence; other fields 2-4 sentences.",
     ].join(" "),
@@ -365,6 +381,7 @@ export async function generateBriefing(
       tickers,
       topOpportunities: opportunities.slice(0, 5),
       upcomingHighImpactEvents: events.filter((e) => e.impact === "high" && e.timestamp * 1000 > Date.now()).slice(0, 8),
+      recentHeadlines: headlines && headlines.length > 0 ? headlines.slice(0, 12) : undefined,
     }),
     1000,
   );

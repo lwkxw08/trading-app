@@ -28,6 +28,7 @@ const NAV = [
   { href: "/signals", label: "Signals" },
   { href: "/alerts", label: "Alerts" },
   { href: "/journal", label: "Journal" },
+  { href: "/portfolio", label: "Portfolio" },
   { href: "/calendar", label: "Macro Calendar" },
 ];
 

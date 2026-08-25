@@ -11,6 +11,7 @@ import {
   detectStructureBreaks,
   detectSwings,
 } from "./detectors";
+import { classifyRegime } from "./regime";
 import type { StrategyAnalysis, TrendState } from "./types";
 
 export function computeTrend(candles: Candle[], timeframe: Timeframe): TrendState {
@@ -52,6 +53,7 @@ export function analyze(symbol: string, timeframe: Timeframe, candles: Candle[],
     structureBreaks: detectStructureBreaks(candles, swings),
     anchoredVwap: computeAnchoredVwap(candles, swings),
     sessionLevels: computeSessionLevels(candles.slice(-Math.min(candles.length, 300))),
+    regime: classifyRegime(candles, atr14),
     trend: computeTrend(candles, timeframe),
     higherTimeframeTrend: higherTfCandles && higherTf ? computeTrend(higherTfCandles, higherTf) : undefined,
   };

@@ -191,6 +191,7 @@ export function evaluateCustomStrategy(a: StrategyAnalysis, strategy: CustomStra
           factors: factors.filter((f) => f.met),
           ...buildTradeLevels(a, direction),
           generatedAt: Date.now(),
+          regime: a.regime.regime,
         }
       : null;
     results.push({ direction, score, qualifies, factors, opportunity });
