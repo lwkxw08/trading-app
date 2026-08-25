@@ -80,6 +80,8 @@ export interface HvnFvgPullback {
   zoneBottom: number;
   /** next heavy volume cluster in the trend direction (or the impulse extreme) */
   target: number;
+  /** suggested stop: beyond the zone with an ATR buffer */
+  stopLoss: number;
   state: "forming" | "in_pullback" | "bounced" | "invalidated";
 }
 

@@ -289,6 +289,7 @@ export function detectHvnFvgPullbacks(
       ? profile.hvns.filter((h) => h.price > zoneTop + binSize).sort((a, b) => a.price - b.price)[0]
       : profile.hvns.filter((h) => h.price < zoneBottom - binSize).sort((a, b) => b.price - a.price)[0];
     const target = nextHvn ? nextHvn.price : leg.end.price;
+    const stopLoss = bull ? zoneBottom - 0.5 * atrEnd : zoneTop + 0.5 * atrEnd;
 
     // state from price action after the impulse completed
     let touched = false;
@@ -335,6 +336,7 @@ export function detectHvnFvgPullbacks(
       zoneTop,
       zoneBottom,
       target,
+      stopLoss,
       state,
     });
   }

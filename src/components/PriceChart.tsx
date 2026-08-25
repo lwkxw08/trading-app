@@ -46,6 +46,7 @@ export interface SetupOverlay {
   zoneBottom: number;
   zoneFrom: number;
   target: number;
+  stopLoss: number;
 }
 
 export default function PriceChart({
@@ -200,6 +201,21 @@ export default function PriceChart({
         ctx.fillStyle = "#22c55e";
         ctx.font = "bold 10px sans-serif";
         ctx.fillText("Setup TP", Math.max(tx + 4, 4), yT - 4);
+      }
+
+      const ySl = series.priceToCoordinate(s.stopLoss);
+      if (ySl != null) {
+        const tx = x2 ?? 0;
+        ctx.strokeStyle = "#ef4444";
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(tx, ySl);
+        ctx.lineTo(paneWidth, ySl);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#ef4444";
+        ctx.font = "bold 10px sans-serif";
+        ctx.fillText("Setup SL", Math.max(tx + 4, 4), ySl - 4);
       }
     }
   }, []);

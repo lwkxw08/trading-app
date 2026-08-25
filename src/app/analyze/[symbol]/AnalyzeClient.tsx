@@ -68,7 +68,6 @@ export default function AnalyzeSymbol() {
   const logSetupToJournal = useCallback(
     (s: HvnFvgPullback, key: string) => {
       const bull = s.direction === "bullish";
-      const zoneHeight = s.zoneTop - s.zoneBottom;
       const trade: JournalTrade = {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         symbol,
@@ -78,7 +77,7 @@ export default function AnalyzeSymbol() {
         entryPrice: bull ? s.zoneTop : s.zoneBottom,
         entryTime: Date.now(),
         size: null,
-        stopLoss: bull ? s.zoneBottom - 0.25 * zoneHeight : s.zoneTop + 0.25 * zoneHeight,
+        stopLoss: s.stopLoss,
         takeProfit: s.target,
         strategyName: "Impulse HVN + FVG pullback",
         notes: `Logged from analysis card · impulse ${fmtPrice(s.impulseStart)} → ${fmtPrice(s.impulseEnd)} · zone ${fmtPrice(s.zoneBottom)}–${fmtPrice(s.zoneTop)}`,
@@ -203,6 +202,7 @@ export default function AnalyzeSymbol() {
       zoneBottom: selectedSetup.zoneBottom,
       zoneFrom: selectedSetup.impulseEndTime,
       target: selectedSetup.target,
+      stopLoss: selectedSetup.stopLoss,
     };
   }, [selectedSetup]);
 
@@ -431,7 +431,8 @@ export default function AnalyzeSymbol() {
                       </div>
                       <p className="mt-1 text-xs text-muted">
                         Impulse {fmtPrice(s.impulseStart)} → {fmtPrice(s.impulseEnd)} · heavy node meets FVG at{" "}
-                        {fmtPrice(s.zoneBottom)}–{fmtPrice(s.zoneTop)} · TP at next volume cluster {fmtPrice(s.target)}
+                        {fmtPrice(s.zoneBottom)}–{fmtPrice(s.zoneTop)} · TP at next volume cluster {fmtPrice(s.target)} · SL{" "}
+                        {fmtPrice(s.stopLoss)}
                       </p>
                       <p className="mt-1 text-[10px] text-accent">
                         {selectedSetup === s ? "Shown on chart — click to hide" : "Click to show on chart"}
