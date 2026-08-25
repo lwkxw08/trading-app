@@ -8,6 +8,7 @@ import { apiUrl } from "@/components/api";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { MARKETS, MARKET_LABELS, type Market } from "@/lib/market/universe";
 import { captureSignals, loadSignals, saveSignals } from "@/lib/signals/store";
+import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import type { Opportunity } from "@/lib/strategies/types";
 
 export default function Scanner() {
@@ -21,13 +22,25 @@ export default function Scanner() {
   const [loading, setLoading] = useState(false);
   const [track, setTrack] = useState(true);
   const [tracked, setTracked] = useState<number | null>(null);
+  const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
+  const [strategyId, setStrategyId] = useState("");
+
+  useEffect(() => {
+    setSavedStrategies(loadSavedStrategies());
+  }, []);
 
   const scan = useCallback(() => {
     setLoading(true);
     setTracked(null);
-    const params = new URLSearchParams({ tf, market });
-    if (symbols.trim()) params.set("symbols", symbols.trim());
-    fetch(apiUrl(`/api/scan?${params}`))
+    const saved = savedStrategies.find((s) => s.id === strategyId) ?? null;
+    const request = saved
+      ? fetch(apiUrl("/api/scan"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ tf, market, symbols: symbols.trim() || undefined, strategy: saved.strategy }),
+        })
+      : fetch(apiUrl(`/api/scan?${new URLSearchParams({ tf, market, ...(symbols.trim() ? { symbols: symbols.trim() } : {}) })}`));
+    request
       .then((r) => r.json())
       .then((d) => {
         const opps: Opportunity[] = d.opportunities ?? [];
@@ -35,14 +48,14 @@ export default function Scanner() {
         setMeta({ scanned: d.scanned ?? 0, errors: d.errors ?? 0 });
         if (track) {
           const qualifying = opps.filter((o) => o.score >= minScore && (direction === "all" || o.direction === direction));
-          const { signals, added } = captureSignals(loadSignals(), qualifying, "Built-in confluence");
+          const { signals, added } = captureSignals(loadSignals(), qualifying, saved ? saved.strategy.name : "Built-in confluence");
           if (added > 0) saveSignals(signals);
           setTracked(added);
         }
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, [tf, market, symbols, track, minScore, direction]);
+  }, [tf, market, symbols, track, minScore, direction, savedStrategies, strategyId]);
 
   useEffect(() => {
     scan();
@@ -101,6 +114,23 @@ export default function Scanner() {
             />
           </div>
         </label>
+        {savedStrategies.length > 0 && (
+          <label className="block text-sm">
+            <span className="text-xs text-muted">Strategy</span>
+            <select
+              value={strategyId}
+              onChange={(e) => setStrategyId(e.target.value)}
+              className="mt-1 block max-w-44 truncate rounded-md border border-edge bg-background px-2 py-1.5 text-sm outline-none"
+            >
+              <option value="">Built-in confluence</option>
+              {savedStrategies.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.strategy.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="block text-sm">
           <span className="text-xs text-muted">Direction</span>
           <select
@@ -117,7 +147,7 @@ export default function Scanner() {
           <span className="text-xs text-muted">Min score: {minScore}</span>
           <input
             type="range"
-            min={40}
+            min={strategyId ? 0 : 40}
             max={90}
             value={minScore}
             onChange={(e) => setMinScore(Number(e.target.value))}

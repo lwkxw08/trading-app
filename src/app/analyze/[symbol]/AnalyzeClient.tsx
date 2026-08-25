@@ -19,7 +19,9 @@ import { loadTrades, saveTrades } from "@/lib/journal/store";
 import type { JournalTrade } from "@/lib/journal/types";
 import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
 import type { NewsHeadline } from "@/lib/news/provider";
+import type { CustomEvaluation } from "@/lib/strategies/custom";
 import { REGIME_LABELS } from "@/lib/strategies/regime";
+import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
@@ -59,6 +61,40 @@ export default function AnalyzeSymbol() {
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
   const [news, setNews] = useState<NewsHeadline[]>([]);
+  const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
+  const [stratId, setStratId] = useState("");
+  const [stratEvals, setStratEvals] = useState<CustomEvaluation[] | null>(null);
+  const [stratLoading, setStratLoading] = useState(false);
+  const [stratError, setStratError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSavedStrategies(loadSavedStrategies());
+  }, []);
+
+  useEffect(() => {
+    setStratEvals(null);
+    setStratError(null);
+  }, [symbol, tf]);
+
+  const runStrategyEval = useCallback(() => {
+    const saved = savedStrategies.find((s) => s.id === stratId);
+    if (!saved) return;
+    setStratLoading(true);
+    setStratError(null);
+    setStratEvals(null);
+    fetch(apiUrl("/api/strategy/eval"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ symbol, tf, strategy: saved.strategy }),
+    })
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error ?? "evaluation failed");
+        setStratEvals(d.evaluations);
+      })
+      .catch((e) => setStratError(e.message))
+      .finally(() => setStratLoading(false));
+  }, [symbol, tf, savedStrategies, stratId]);
 
   useEffect(() => {
     setNews([]);
@@ -512,6 +548,57 @@ export default function AnalyzeSymbol() {
                     </div>
                   ))}
               </div>
+            </section>
+          )}
+
+          {/* Saved strategy evaluation */}
+          {savedStrategies.length > 0 && (
+            <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
+              <h2 className="mb-2 font-semibold">Your Strategies</h2>
+              <p className="mb-2 text-xs text-muted">Evaluate a saved Strategy Lab strategy against {symbol} · {tf} alongside the built-in score.</p>
+              <div className="flex gap-2">
+                <select
+                  value={stratId}
+                  onChange={(e) => setStratId(e.target.value)}
+                  className="min-w-0 flex-1 truncate rounded-md border border-edge bg-background px-2 py-1.5 text-sm outline-none"
+                >
+                  <option value="">Select a saved strategy…</option>
+                  {savedStrategies.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.strategy.name}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={runStrategyEval}
+                  disabled={!stratId || stratLoading}
+                  className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                >
+                  {stratLoading ? "Evaluating…" : "Evaluate"}
+                </button>
+              </div>
+              {stratError && <p className="mt-2 text-xs text-bear">{stratError}</p>}
+              {stratEvals && (
+                <div className="mt-3 space-y-3">
+                  {stratEvals.map((ev) => (
+                    <div key={ev.direction} className="rounded-md border border-edge p-2">
+                      <div className="flex items-center justify-between">
+                        <span className={`font-semibold uppercase ${ev.direction === "long" ? "text-bull" : "text-bear"}`}>{ev.direction}</span>
+                        <span className={`rounded px-2 py-0.5 text-xs font-bold ${ev.qualifies ? "bg-bull/15 text-bull" : "bg-background text-muted"}`}>
+                          {ev.score}/100 {ev.qualifies ? "· qualifies" : "· below min score"}
+                        </span>
+                      </div>
+                      <ul className="mt-1 space-y-0.5 text-xs">
+                        {ev.factors.map((f, i) => (
+                          <li key={i} className={f.met ? "" : "text-muted"}>
+                            {f.met ? "✓" : "·"} {f.name} — {f.detail}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              )}
             </section>
           )}
 
