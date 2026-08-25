@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import AiChat from "@/components/AiChat";
@@ -12,6 +13,8 @@ import { useLiveKline } from "@/components/useLiveMarket";
 import { fmtPrice } from "@/components/format";
 import type { AiAnalysis } from "@/lib/ai/analyze";
 import { addDrawing, clearDrawings, loadDrawings } from "@/lib/drawings/store";
+import { loadTrades, saveTrades } from "@/lib/journal/store";
+import type { JournalTrade } from "@/lib/journal/types";
 import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
@@ -48,6 +51,7 @@ export default function AnalyzeSymbol() {
   const liveCandle = useLiveKline(symbol, tf);
   const [vpBars, setVpBars] = useState<number>(200);
   const [selectedSetup, setSelectedSetup] = useState<HvnFvgPullback | null>(null);
+  const [loggedSetups, setLoggedSetups] = useState<Set<string>>(new Set());
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
 
@@ -59,6 +63,42 @@ export default function AnalyzeSymbol() {
   const onPriceClick = useCallback(
     (price: number) => setDrawings(addDrawing(symbol, price)),
     [symbol],
+  );
+
+  const logSetupToJournal = useCallback(
+    (s: HvnFvgPullback, key: string) => {
+      const bull = s.direction === "bullish";
+      const zoneHeight = s.zoneTop - s.zoneBottom;
+      const trade: JournalTrade = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        symbol,
+        timeframe: tf,
+        direction: bull ? "long" : "short",
+        status: "open",
+        entryPrice: bull ? s.zoneTop : s.zoneBottom,
+        entryTime: Date.now(),
+        size: null,
+        stopLoss: bull ? s.zoneBottom - 0.25 * zoneHeight : s.zoneTop + 0.25 * zoneHeight,
+        takeProfit: s.target,
+        strategyName: "Impulse HVN + FVG pullback",
+        notes: `Logged from analysis card · impulse ${fmtPrice(s.impulseStart)} → ${fmtPrice(s.impulseEnd)} · zone ${fmtPrice(s.zoneBottom)}–${fmtPrice(s.zoneTop)}`,
+        snapshot: analysis
+          ? {
+              trendDirection: analysis.trend.direction,
+              htfDirection: analysis.higherTimeframeTrend?.direction,
+              rsi14: analysis.trend.rsi14,
+              confluenceScore: null,
+              factors: [],
+            }
+          : null,
+        exitPrice: null,
+        exitTime: null,
+        exitNotes: "",
+      };
+      saveTrades([trade, ...loadTrades()]);
+      setLoggedSetups((cur) => new Set(cur).add(key));
+    },
+    [symbol, tf, analysis],
   );
 
   const liveCandles = useMemo<Candle[]>(() => {
@@ -74,6 +114,7 @@ export default function AnalyzeSymbol() {
     setAi(null);
     setSelectedOpp(null);
     setSelectedSetup(null);
+    setLoggedSetups(new Set());
     fetch(apiUrl(`/api/klines?symbol=${symbol}&tf=${tf}`))
       .then(async (r) => {
         const d = await r.json();
@@ -395,6 +436,27 @@ export default function AnalyzeSymbol() {
                       <p className="mt-1 text-[10px] text-accent">
                         {selectedSetup === s ? "Shown on chart — click to hide" : "Click to show on chart"}
                       </p>
+                      <div className="mt-2 flex items-center gap-3">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            logSetupToJournal(s, `${s.direction}-${s.impulseEndTime}`);
+                          }}
+                          disabled={loggedSetups.has(`${s.direction}-${s.impulseEndTime}`)}
+                          className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                        >
+                          {loggedSetups.has(`${s.direction}-${s.impulseEndTime}`) ? "Logged to Journal" : "Log to Journal"}
+                        </button>
+                        {loggedSetups.has(`${s.direction}-${s.impulseEndTime}`) && (
+                          <Link
+                            href="/journal"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-[11px] text-accent hover:underline"
+                          >
+                            View in Journal
+                          </Link>
+                        )}
+                      </div>
                     </div>
                   ))}
               </div>
