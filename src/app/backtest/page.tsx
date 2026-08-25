@@ -319,7 +319,7 @@ export default function BacktestPage() {
                       );
                       setCustomMinScore(s.strategy.minScore);
                     }}
-                    className={inputCls}
+                    className={`${inputCls} w-full min-w-0 max-w-full truncate`}
                   >
                     <option value="">Load saved strategy…</option>
                     {savedStrategies.map((s) => (
