@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import AiChat from "@/components/AiChat";
 import OpportunityCard, { FavoriteStar } from "@/components/OpportunityCard";
 import { apiUrl } from "@/components/api";
-import PriceChart, { type LevelLine, type ProfileOverlay, type ZoneBox } from "@/components/PriceChart";
+import PriceChart, { type LevelLine, type ProfileOverlay, type SetupOverlay, type ZoneBox } from "@/components/PriceChart";
 import TradePlanBuilder from "@/components/TradePlanBuilder";
 import MtfDashboard from "@/components/MtfDashboard";
 import { useLiveKline } from "@/components/useLiveMarket";
@@ -13,7 +13,7 @@ import { fmtPrice } from "@/components/format";
 import type { AiAnalysis } from "@/lib/ai/analyze";
 import { addDrawing, clearDrawings, loadDrawings } from "@/lib/drawings/store";
 import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
-import type { Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
+import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
 
@@ -47,6 +47,7 @@ export default function AnalyzeSymbol() {
   );
   const liveCandle = useLiveKline(symbol, tf);
   const [vpBars, setVpBars] = useState<number>(200);
+  const [selectedSetup, setSelectedSetup] = useState<HvnFvgPullback | null>(null);
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
 
@@ -72,6 +73,7 @@ export default function AnalyzeSymbol() {
     setError(null);
     setAi(null);
     setSelectedOpp(null);
+    setSelectedSetup(null);
     fetch(apiUrl(`/api/klines?symbol=${symbol}&tf=${tf}`))
       .then(async (r) => {
         const d = await r.json();
@@ -147,6 +149,21 @@ export default function AnalyzeSymbol() {
     const vp = analysis.volumeProfile;
     return { bins: vp.bins, poc: vp.poc, vah: vp.vah, val: vp.val };
   }, [analysis, layers.volumeProfile]);
+
+  const setupOverlay = useMemo<SetupOverlay | null>(() => {
+    if (!selectedSetup) return null;
+    return {
+      direction: selectedSetup.direction,
+      impulseFromTime: selectedSetup.impulseStartTime,
+      impulseFromPrice: selectedSetup.impulseStart,
+      impulseToTime: selectedSetup.impulseEndTime,
+      impulseToPrice: selectedSetup.impulseEnd,
+      zoneTop: selectedSetup.zoneTop,
+      zoneBottom: selectedSetup.zoneBottom,
+      zoneFrom: selectedSetup.impulseEndTime,
+      target: selectedSetup.target,
+    };
+  }, [selectedSetup]);
 
   const zones = useMemo<ZoneBox[]>(() => {
     if (!analysis) return [];
@@ -285,6 +302,7 @@ export default function AnalyzeSymbol() {
             levels={levels}
             zones={zones}
             profile={profile}
+            setup={setupOverlay}
             drawMode={drawMode}
             onPriceClick={onPriceClick}
           />
@@ -355,7 +373,13 @@ export default function AnalyzeSymbol() {
                 {analysis.hvnFvgPullbacks
                   .filter((s) => s.state !== "invalidated")
                   .map((s) => (
-                    <div key={`${s.direction}-${s.impulseEndTime}`} className="rounded-md border border-edge p-2">
+                    <div
+                      key={`${s.direction}-${s.impulseEndTime}`}
+                      onClick={() => setSelectedSetup((cur) => (cur === s ? null : s))}
+                      className={`cursor-pointer rounded-md border p-2 ${
+                        selectedSetup === s ? "border-accent ring-1 ring-accent" : "border-edge hover:border-accent/50"
+                      }`}
+                    >
                       <div className="flex items-center justify-between">
                         <span className={`font-semibold ${s.direction === "bullish" ? "text-bull" : "text-bear"}`}>
                           {s.direction === "bullish" ? "BUY setup" : "SELL setup"}
@@ -367,6 +391,9 @@ export default function AnalyzeSymbol() {
                       <p className="mt-1 text-xs text-muted">
                         Impulse {fmtPrice(s.impulseStart)} → {fmtPrice(s.impulseEnd)} · heavy node meets FVG at{" "}
                         {fmtPrice(s.zoneBottom)}–{fmtPrice(s.zoneTop)} · TP at next volume cluster {fmtPrice(s.target)}
+                      </p>
+                      <p className="mt-1 text-[10px] text-accent">
+                        {selectedSetup === s ? "Shown on chart — click to hide" : "Click to show on chart"}
                       </p>
                     </div>
                   ))}

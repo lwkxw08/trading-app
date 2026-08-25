@@ -36,11 +36,24 @@ export interface ProfileOverlay {
   val: number;
 }
 
+export interface SetupOverlay {
+  direction: "bullish" | "bearish";
+  impulseFromTime: number;
+  impulseFromPrice: number;
+  impulseToTime: number;
+  impulseToPrice: number;
+  zoneTop: number;
+  zoneBottom: number;
+  zoneFrom: number;
+  target: number;
+}
+
 export default function PriceChart({
   candles,
   levels,
   zones = [],
   profile = null,
+  setup = null,
   drawMode = false,
   onPriceClick,
 }: {
@@ -48,6 +61,7 @@ export default function PriceChart({
   levels: LevelLine[];
   zones?: ZoneBox[];
   profile?: ProfileOverlay | null;
+  setup?: SetupOverlay | null;
   drawMode?: boolean;
   onPriceClick?: (price: number) => void;
 }) {
@@ -60,11 +74,13 @@ export default function PriceChart({
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const zonesRef = useRef<ZoneBox[]>(zones);
   const profileRef = useRef<ProfileOverlay | null>(profile);
+  const setupRef = useRef<SetupOverlay | null>(setup);
   const clickRef = useRef<{ drawMode: boolean; onPriceClick?: (price: number) => void }>({ drawMode, onPriceClick });
   const [fullscreen, setFullscreen] = useState(false);
 
   zonesRef.current = zones;
   profileRef.current = profile;
+  setupRef.current = setup;
   clickRef.current = { drawMode, onPriceClick };
 
   const drawZones = useCallback(() => {
@@ -122,6 +138,68 @@ export default function PriceChart({
                 : "rgba(96,150,255,0.35)";
           ctx.fillRect(0, y - binH / 2, barW, binH);
         }
+      }
+    }
+
+    // selected setup: impulse leg, entry zone, target
+    const s = setupRef.current;
+    if (s) {
+      const ts = chart.timeScale();
+      const x1 = ts.timeToCoordinate(s.impulseFromTime as never);
+      const y1s = series.priceToCoordinate(s.impulseFromPrice);
+      const x2 = ts.timeToCoordinate(s.impulseToTime as never);
+      const y2s = series.priceToCoordinate(s.impulseToPrice);
+      const accent = s.direction === "bullish" ? "#22c55e" : "#ef4444";
+
+      const zTop = series.priceToCoordinate(s.zoneTop);
+      const zBottom = series.priceToCoordinate(s.zoneBottom);
+      if (zTop != null && zBottom != null) {
+        const zx = ts.timeToCoordinate(s.zoneFrom as never) ?? 0;
+        ctx.fillStyle = s.direction === "bullish" ? "rgba(34,197,94,0.22)" : "rgba(239,68,68,0.22)";
+        ctx.fillRect(zx, zTop, Math.max(0, paneWidth - zx), zBottom - zTop);
+        ctx.strokeStyle = accent;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(zx, zTop, Math.max(0, paneWidth - zx), zBottom - zTop);
+        ctx.setLineDash([]);
+        ctx.fillStyle = accent;
+        ctx.font = "bold 10px sans-serif";
+        ctx.fillText("HVN ∩ FVG entry zone", Math.max(zx + 4, 4), Math.min(zTop - 4, h - 4));
+      }
+
+      if (x1 != null && y1s != null && x2 != null && y2s != null) {
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1s);
+        ctx.lineTo(x2, y2s);
+        ctx.stroke();
+        // arrowhead at impulse end
+        const ang = Math.atan2(y2s - y1s, x2 - x1);
+        ctx.fillStyle = accent;
+        ctx.beginPath();
+        ctx.moveTo(x2, y2s);
+        ctx.lineTo(x2 - 9 * Math.cos(ang - 0.4), y2s - 9 * Math.sin(ang - 0.4));
+        ctx.lineTo(x2 - 9 * Math.cos(ang + 0.4), y2s - 9 * Math.sin(ang + 0.4));
+        ctx.closePath();
+        ctx.fill();
+        ctx.lineWidth = 1;
+        ctx.font = "bold 10px sans-serif";
+        ctx.fillText("Impulse", (x1 + x2) / 2 + 6, (y1s + y2s) / 2);
+      }
+
+      const yT = series.priceToCoordinate(s.target);
+      if (yT != null) {
+        const tx = x2 ?? 0;
+        ctx.strokeStyle = "#22c55e";
+        ctx.setLineDash([6, 4]);
+        ctx.beginPath();
+        ctx.moveTo(tx, yT);
+        ctx.lineTo(paneWidth, yT);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#22c55e";
+        ctx.font = "bold 10px sans-serif";
+        ctx.fillText("Setup TP", Math.max(tx + 4, 4), yT - 4);
       }
     }
   }, []);
@@ -241,7 +319,7 @@ export default function PriceChart({
 
   useEffect(() => {
     drawZones();
-  }, [zones, profile, drawZones]);
+  }, [zones, profile, setup, drawZones]);
 
   useEffect(() => {
     const series = seriesRef.current;
