@@ -5,6 +5,7 @@ import { useState } from "react";
 import SymbolInput from "@/components/SymbolInput";
 import { useFavorites } from "@/components/useFavorites";
 import { DEFAULT_CRYPTO_UNIVERSE } from "@/lib/market/binance";
+import { DEFAULT_FOREX_UNIVERSE, DEFAULT_STOCK_UNIVERSE } from "@/lib/market/twelvedata";
 
 export default function AnalyzeIndex() {
   const router = useRouter();
@@ -25,7 +26,7 @@ export default function AnalyzeIndex() {
           <SymbolInput
             value={symbol}
             onChange={setSymbol}
-            placeholder="Enter a symbol, e.g. BTCUSDT"
+            placeholder="Enter a symbol, e.g. BTCUSDT, AAPL, EURUSD"
             className="w-full rounded-md border border-edge bg-surface px-3 py-2 text-sm outline-none focus:border-accent"
           />
         </div>
@@ -50,20 +51,26 @@ export default function AnalyzeIndex() {
           </div>
         </div>
       )}
-      <div>
-        <h2 className="mb-2 text-sm font-semibold text-muted">Popular</h2>
-        <div className="flex flex-wrap gap-2">
-          {DEFAULT_CRYPTO_UNIVERSE.map((c) => (
-            <button
-              key={c.symbol}
-              onClick={() => router.push(`/analyze/${c.symbol}`)}
-              className="rounded-md border border-edge bg-surface px-3 py-1.5 text-sm hover:border-accent"
-            >
-              {c.symbol}
-            </button>
-          ))}
+      {[
+        { label: "Popular crypto", list: DEFAULT_CRYPTO_UNIVERSE },
+        { label: "Stocks & ETFs", list: DEFAULT_STOCK_UNIVERSE },
+        { label: "Forex", list: DEFAULT_FOREX_UNIVERSE },
+      ].map((group) => (
+        <div key={group.label}>
+          <h2 className="mb-2 text-sm font-semibold text-muted">{group.label}</h2>
+          <div className="flex flex-wrap gap-2">
+            {group.list.map((c) => (
+              <button
+                key={c.symbol}
+                onClick={() => router.push(`/analyze/${c.symbol}`)}
+                className="rounded-md border border-edge bg-surface px-3 py-1.5 text-sm hover:border-accent"
+              >
+                {c.symbol}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      ))}
     </div>
   );
 }

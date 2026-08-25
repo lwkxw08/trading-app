@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { apiUrl } from "@/components/api";
+import { isCryptoSymbol } from "@/lib/market/symbols";
 import type { Candle, Ticker, Timeframe } from "@/lib/market/types";
 
 // data-stream.binance.vision mirrors the market-data streams for regions
@@ -58,15 +60,45 @@ function connect(streams: string[], onMessage: (data: unknown) => void): () => v
   };
 }
 
-/** Streams 24h mini-ticker updates for the given symbols; returns a symbol → Ticker map. */
+/**
+ * Streams 24h mini-ticker updates for the given symbols; returns a symbol → Ticker map.
+ * Crypto symbols stream over the Binance websocket; stocks/forex symbols poll
+ * the tickers API instead (no public websocket on the free data tier).
+ */
 export function useLiveTickers(symbols: string[]): Record<string, Ticker> {
   const [tickers, setTickers] = useState<Record<string, Ticker>>({});
   const key = symbols.join(",");
   const pendingRef = useRef<Record<string, Ticker>>({});
 
   useEffect(() => {
-    if (symbols.length === 0) return;
-    const streams = symbols.map((s) => `${s.toLowerCase()}@miniTicker`);
+    const polled = symbols.filter((s) => !isCryptoSymbol(s));
+    if (polled.length === 0) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/tickers?symbols=${encodeURIComponent(polled.join(","))}`));
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { tickers?: Ticker[] };
+        const update: Record<string, Ticker> = {};
+        for (const t of data.tickers ?? []) update[t.symbol] = t;
+        if (!cancelled && Object.keys(update).length > 0) setTickers((prev) => ({ ...prev, ...update }));
+      } catch {
+        // transient network error — next poll retries
+      }
+    };
+    poll();
+    const timer = setInterval(poll, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+
+  useEffect(() => {
+    const streamed = symbols.filter(isCryptoSymbol);
+    if (streamed.length === 0) return;
+    const streams = streamed.map((s) => `${s.toLowerCase()}@miniTicker`);
     // Batch updates on a short interval so rapid frames don't thrash renders.
     const flush = setInterval(() => {
       const pending = pendingRef.current;
@@ -97,13 +129,38 @@ export function useLiveTickers(symbols: string[]): Record<string, Ticker> {
   return tickers;
 }
 
-/** Streams live kline updates for one symbol/timeframe; returns the latest in-progress candle. */
+/**
+ * Streams live kline updates for one symbol/timeframe; returns the latest
+ * in-progress candle. Crypto uses the Binance websocket; stocks/forex poll the
+ * klines API on a short interval instead.
+ */
 export function useLiveKline(symbol: string, tf: Timeframe): Candle | null {
   const [candle, setCandle] = useState<Candle | null>(null);
 
   useEffect(() => {
     setCandle(null);
-    if (!symbol) return;
+    if (!symbol || isCryptoSymbol(symbol)) return;
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/klines?symbol=${encodeURIComponent(symbol)}&tf=${tf}&limit=1`));
+        if (!res.ok || cancelled) return;
+        const data = (await res.json()) as { candles?: Candle[] };
+        const last = data.candles?.[data.candles.length - 1];
+        if (!cancelled && last) setCandle(last);
+      } catch {
+        // transient network error — next poll retries
+      }
+    };
+    const timer = setInterval(poll, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [symbol, tf]);
+
+  useEffect(() => {
+    if (!symbol || !isCryptoSymbol(symbol)) return;
     const close = connect([`${symbol.toLowerCase()}@kline_${tf}`], (data) => {
       const m = data as KlineMsg;
       if (!m.k) return;

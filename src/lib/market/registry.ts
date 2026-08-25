@@ -1,8 +1,14 @@
 import { BinanceProvider } from "./binance";
 import { PolygonProvider } from "./stocks";
+import { isCryptoSymbol } from "./symbols";
+import { TwelveDataProvider } from "./twelvedata";
 import type { AssetClass, MarketDataProvider } from "./types";
 
-const providers: MarketDataProvider[] = [new BinanceProvider(), new PolygonProvider()];
+const binance = new BinanceProvider();
+const twelvedata = new TwelveDataProvider();
+const polygon = new PolygonProvider();
+
+const providers: MarketDataProvider[] = [binance, twelvedata, polygon];
 
 export function getProviders(): MarketDataProvider[] {
   return providers;
@@ -13,12 +19,12 @@ export function getProviderForAssetClass(assetClass: AssetClass): MarketDataProv
 }
 
 export function getProviderForSymbol(symbol: string): MarketDataProvider {
-  // Crypto symbols on Binance end in a quote asset like USDT; everything else
-  // routes to the stocks/futures provider when configured.
-  if (/USDT$|USDC$|BUSD$/.test(symbol)) return providers[0];
-  const polygon = providers[1];
+  // Crypto symbols quoted in a stablecoin stay on Binance; everything else
+  // (stocks, ETFs, forex pairs) routes to the first configured provider.
+  if (isCryptoSymbol(symbol)) return binance;
+  if (twelvedata.isConfigured()) return twelvedata;
   if (polygon.isConfigured()) return polygon;
-  return providers[0];
+  return binance;
 }
 
 export function availableAssetClasses(): { assetClass: AssetClass; available: boolean }[] {
