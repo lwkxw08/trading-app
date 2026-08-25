@@ -5,6 +5,7 @@ import {
   computeSessionLevels,
   computeVolumeProfile,
   detectFairValueGaps,
+  detectHvnFvgPullbacks,
   detectLiquiditySweeps,
   detectOrderBlocks,
   detectStructureBreaks,
@@ -36,15 +37,17 @@ export function analyze(symbol: string, timeframe: Timeframe, candles: Candle[],
   const vpBars = opts?.vpBars ?? 200;
   const profileWindow = candles.slice(-Math.min(candles.length, vpBars));
   const swings = detectSwings(candles);
+  const fvgs = detectFairValueGaps(candles, 0.15, atr14);
   return {
     symbol,
     timeframe,
     lastPrice: candles[candles.length - 1].close,
     candles,
-    fvgs: detectFairValueGaps(candles, 0.15, atr14),
+    fvgs,
     orderBlocks: detectOrderBlocks(candles, atr14),
     swings,
     volumeProfile: computeVolumeProfile(profileWindow),
+    hvnFvgPullbacks: detectHvnFvgPullbacks(candles, swings, fvgs, atr14),
     liquiditySweeps: detectLiquiditySweeps(candles, swings),
     structureBreaks: detectStructureBreaks(candles, swings),
     anchoredVwap: computeAnchoredVwap(candles, swings),

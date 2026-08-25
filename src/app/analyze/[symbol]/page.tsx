@@ -347,6 +347,33 @@ export default function AnalyzeSymbol() {
             )}
           </section>
 
+          {/* Impulse HVN+FVG pullback setups */}
+          {analysis && analysis.hvnFvgPullbacks.filter((s) => s.state !== "invalidated").length > 0 && (
+            <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
+              <h2 className="mb-2 font-semibold">Impulse HVN + FVG Pullback</h2>
+              <div className="space-y-2">
+                {analysis.hvnFvgPullbacks
+                  .filter((s) => s.state !== "invalidated")
+                  .map((s) => (
+                    <div key={`${s.direction}-${s.impulseEndTime}`} className="rounded-md border border-edge p-2">
+                      <div className="flex items-center justify-between">
+                        <span className={`font-semibold ${s.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                          {s.direction === "bullish" ? "BUY setup" : "SELL setup"}
+                        </span>
+                        <span className="text-xs text-muted">
+                          {s.state === "bounced" ? "Bounced from zone" : s.state === "in_pullback" ? "Pulling back into zone" : "Awaiting pullback"}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted">
+                        Impulse {fmtPrice(s.impulseStart)} → {fmtPrice(s.impulseEnd)} · heavy node meets FVG at{" "}
+                        {fmtPrice(s.zoneBottom)}–{fmtPrice(s.zoneTop)} · TP at next volume cluster {fmtPrice(s.target)}
+                      </p>
+                    </div>
+                  ))}
+              </div>
+            </section>
+          )}
+
           {/* Structures summary */}
           {analysis && (
             <section className="rounded-lg border border-edge bg-surface p-4 text-sm">

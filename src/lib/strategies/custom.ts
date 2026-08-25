@@ -14,6 +14,7 @@ export type ConditionId =
   | "volume_profile_value"
   | "hvn_level"
   | "lvn_path"
+  | "hvn_fvg_pullback"
   | "liquidity_sweep"
   | "bos"
   | "choch"
@@ -49,6 +50,7 @@ export const CONDITION_LIBRARY: ConditionMeta[] = [
   { id: "volume_profile_value", label: "Volume profile value area", description: "Longs between VAL and POC, shorts between POC and VAH", defaultWeight: 15, pineSupported: false },
   { id: "hvn_level", label: "High-volume node level", description: "An HVN within 1 ATR acting as support (longs) or resistance (shorts)", defaultWeight: 12, pineSupported: false },
   { id: "lvn_path", label: "Low-volume node path", description: "An LVN within 2 ATR in the trade direction — thin volume eases the move", defaultWeight: 6, pineSupported: false },
+  { id: "hvn_fvg_pullback", label: "Impulse HVN + FVG pullback", description: "Sharp move whose heavy volume node coincides with an FVG; price pulled back into that zone or is bouncing away from it", defaultWeight: 20, pineSupported: false },
   { id: "liquidity_sweep", label: "Liquidity sweep", description: "Stop hunt beyond a swing high/low reclaimed within last 10 bars", defaultWeight: 16, pineSupported: true },
   { id: "bos", label: "Break of Structure (BOS)", description: "Latest structure break continues in trade direction", defaultWeight: 10, pineSupported: true },
   { id: "choch", label: "Change of Character (CHoCH)", description: "Latest structure break is a reversal into trade direction", defaultWeight: 14, pineSupported: true },
@@ -100,6 +102,15 @@ function conditionMet(id: ConditionId, a: StrategyAnalysis, direction: "long" | 
     case "lvn_path": {
       const hit = a.volumeProfile.lvns.find((nd) => (bull ? nd.price > price && nd.price - price <= 2 * atrVal : nd.price < price && price - nd.price <= 2 * atrVal));
       return { met: Boolean(hit), detail: hit ? `LVN at ${hit.price.toFixed(2)} ${bull ? "above" : "below"} — thin-volume path` : "No LVN ahead within 2 ATR" };
+    }
+    case "hvn_fvg_pullback": {
+      const hit = a.hvnFvgPullbacks.find((s) => s.direction === dir && (s.state === "in_pullback" || s.state === "bounced"));
+      return {
+        met: Boolean(hit),
+        detail: hit
+          ? `${hit.state === "bounced" ? "Bouncing from" : "In pullback to"} HVN+FVG zone ${hit.zoneBottom.toFixed(2)}–${hit.zoneTop.toFixed(2)}, target ${hit.target.toFixed(2)}`
+          : "No impulse HVN+FVG pullback in play",
+      };
     }
     case "liquidity_sweep": {
       const recentBars = a.candles.length - 1;

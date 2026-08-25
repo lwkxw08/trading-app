@@ -6,7 +6,15 @@ import { loadTrades, saveTrades } from "@/lib/journal/store";
 import type { JournalTrade, MarketSnapshot } from "@/lib/journal/types";
 import type { Timeframe } from "@/lib/market/types";
 import { calculatePosition, takeProfitLadder } from "@/lib/risk/position";
+import type { StopCandidate } from "@/lib/risk/stops";
+import { apiUrl } from "./api";
 import { fmtPrice } from "./format";
+
+interface StopAdviceResult {
+  candidates: StopCandidate[];
+  advice: { recommendedStop: number; rationale: string; alternatives: string } | null;
+  error?: string;
+}
 
 interface Defaults {
   entry: number;
@@ -30,6 +38,9 @@ export default function TradePlanBuilder({ defaults, journal }: { defaults?: Def
   const [takeProfit, setTakeProfit] = useState(defaults?.takeProfit ?? 0);
 
   const [logged, setLogged] = useState(false);
+  const [stops, setStops] = useState<StopAdviceResult | null>(null);
+  const [stopsLoading, setStopsLoading] = useState(false);
+  const [stopsError, setStopsError] = useState<string | null>(null);
 
   useEffect(() => {
     if (defaults) {
@@ -37,6 +48,8 @@ export default function TradePlanBuilder({ defaults, journal }: { defaults?: Def
       setStopLoss(defaults.stopLoss);
       setTakeProfit(defaults.takeProfit);
       setLogged(false);
+      setStops(null);
+      setStopsError(null);
     }
   }, [defaults]);
 
@@ -75,6 +88,33 @@ export default function TradePlanBuilder({ defaults, journal }: { defaults?: Def
     setLogged(true);
   }, [plan, journal, entry, stopLoss, takeProfit]);
 
+  const suggestStops = useCallback(async () => {
+    if (!journal || entry <= 0 || takeProfit <= 0) return;
+    setStopsLoading(true);
+    setStopsError(null);
+    try {
+      const res = await fetch(apiUrl("/api/ai/stops"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          symbol: journal.symbol,
+          tf: journal.timeframe,
+          direction: takeProfit >= entry ? "long" : "short",
+          entry,
+          takeProfit,
+        }),
+      });
+      const data = (await res.json()) as StopAdviceResult & { error?: string };
+      if (!res.ok) throw new Error(data.error ?? `Request failed (${res.status})`);
+      setStops(data);
+      if (data.error) setStopsError(data.error);
+    } catch (e) {
+      setStopsError(e instanceof Error ? e.message : "Stop suggestion failed");
+    } finally {
+      setStopsLoading(false);
+    }
+  }, [journal, entry, takeProfit]);
+
   const ladder = useMemo(
     () => (entry > 0 && stopLoss > 0 && entry !== stopLoss ? takeProfitLadder(entry, stopLoss) : []),
     [entry, stopLoss],
@@ -91,6 +131,55 @@ export default function TradePlanBuilder({ defaults, journal }: { defaults?: Def
         <NumberInput label="Stop loss" value={stopLoss} onChange={setStopLoss} step={0.0001} />
         <NumberInput label="Take profit" value={takeProfit} onChange={setTakeProfit} step={0.0001} />
       </div>
+      {journal && (
+        <div className="mt-3">
+          <button
+            onClick={suggestStops}
+            disabled={stopsLoading || entry <= 0 || takeProfit <= 0}
+            className="rounded-md border border-edge px-3 py-1.5 text-xs font-semibold hover:border-accent disabled:opacity-50"
+          >
+            {stopsLoading ? "Analysing stops…" : "Suggest stop (AI)"}
+          </button>
+          {stopsError && <p className="mt-2 text-xs text-bear">{stopsError}</p>}
+          {stops && stops.candidates.length > 0 && (
+            <div className="mt-2 space-y-1.5">
+              {stops.candidates.map((c) => {
+                const risk = Math.abs(entry - c.price);
+                const rr = risk > 0 ? Math.abs(takeProfit - entry) / risk : 0;
+                const recommended = stops.advice?.recommendedStop === c.price;
+                return (
+                  <div
+                    key={c.label}
+                    className={`flex items-center justify-between gap-2 rounded-md border px-2 py-1.5 text-xs ${recommended ? "border-accent" : "border-edge"}`}
+                  >
+                    <div className="min-w-0">
+                      <span className="font-semibold">
+                        {c.label} {fmtPrice(c.price)}
+                      </span>
+                      <span className="ml-2 text-muted">R:R {rr.toFixed(2)}</span>
+                      {recommended && <span className="ml-2 text-accent">AI pick</span>}
+                      <p className="truncate text-muted" title={c.basis}>
+                        {c.basis}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => setStopLoss(c.price)}
+                      className="shrink-0 rounded-md border border-edge px-2 py-1 font-semibold hover:border-accent"
+                    >
+                      Use
+                    </button>
+                  </div>
+                );
+              })}
+              {stops.advice && (
+                <p className="text-xs text-muted">
+                  {stops.advice.rationale} {stops.advice.alternatives}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {plan && (
         <div className="mt-4 space-y-1.5 border-t border-edge pt-3 text-sm">
           <Row label="Direction" value={plan.direction.toUpperCase()} accent={plan.direction === "long" ? "bull" : "bear"} />

@@ -63,6 +63,26 @@ export interface VolumeProfile {
   startTime: number;
 }
 
+export interface HvnFvgPullback {
+  kind: "hvn_fvg_pullback";
+  direction: Direction; // bullish = buy the pullback in an up-impulse
+  impulseStartIndex: number;
+  impulseEndIndex: number;
+  impulseStartTime: number;
+  impulseEndTime: number;
+  impulseStart: number;
+  impulseEnd: number;
+  /** the high-volume node inside the impulse that coincides with an FVG */
+  node: VolumeNode;
+  fvg: FairValueGap;
+  /** entry zone: intersection of the node band and the FVG */
+  zoneTop: number;
+  zoneBottom: number;
+  /** next heavy volume cluster in the trend direction (or the impulse extreme) */
+  target: number;
+  state: "forming" | "in_pullback" | "bounced" | "invalidated";
+}
+
 export interface LiquiditySweep {
   kind: "liquidity_sweep";
   direction: Direction; // bullish = swept lows and reclaimed, bearish = swept highs and rejected
@@ -120,6 +140,7 @@ export interface StrategyAnalysis {
   orderBlocks: OrderBlock[];
   swings: SwingPoint[];
   volumeProfile: VolumeProfile;
+  hvnFvgPullbacks: HvnFvgPullback[];
   liquiditySweeps: LiquiditySweep[];
   structureBreaks: StructureBreak[];
   anchoredVwap: AnchoredVwap | null;

@@ -71,6 +71,19 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
     });
   }
 
+  // 3d. Impulse HVN + FVG pullback: sharp move whose heavy volume node sits in
+  // an FVG, with price pulled back into (or bouncing off) that zone
+  const pullback = a.hvnFvgPullbacks.find(
+    (s) => s.direction === (wantBullish ? "bullish" : "bearish") && (s.state === "in_pullback" || s.state === "bounced"),
+  );
+  if (pullback) {
+    factors.push({
+      name: "HVN+FVG Pullback",
+      detail: `${pullback.state === "bounced" ? "Bounce from" : "Pullback into"} the ${pullback.zoneBottom.toFixed(2)}–${pullback.zoneTop.toFixed(2)} zone where the impulse's heavy volume node meets a ${wantBullish ? "bullish" : "bearish"} FVG — next volume cluster at ${pullback.target.toFixed(2)}`,
+      weight: pullback.state === "bounced" ? 20 : 14,
+    });
+  }
+
   // 4. Trend alignment on trading timeframe
   if ((wantBullish && a.trend.direction === "up") || (!wantBullish && a.trend.direction === "down")) {
     factors.push({ name: "Trend Alignment", detail: `${a.timeframe} trend is ${a.trend.direction} (price vs EMA20/50)`, weight: 15 });
@@ -158,7 +171,7 @@ function scoreDirection(a: StrategyAnalysis, direction: "long" | "short", events
 
   // Require at least one structural reason to exist
   const structural = factors.some(
-    (f) => ["Fair Value Gap", "Order Block", "Volume Profile", "HVN Level", "Liquidity Sweep", "CHoCH", "BOS"].includes(f.name) && f.weight > 0,
+    (f) => ["Fair Value Gap", "Order Block", "Volume Profile", "HVN Level", "HVN+FVG Pullback", "Liquidity Sweep", "CHoCH", "BOS"].includes(f.name) && f.weight > 0,
   );
   if (!structural) return null;
 

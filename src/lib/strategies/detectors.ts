@@ -2,6 +2,7 @@ import type { Candle } from "@/lib/market/types";
 import type {
   AnchoredVwap,
   FairValueGap,
+  HvnFvgPullback,
   LiquiditySweep,
   OrderBlock,
   SessionLevels,
@@ -212,6 +213,120 @@ function detectVolumeNodes(bins: VolumeProfileLevel[]): { hvns: VolumeNode[]; lv
   };
 
   return { hvns: dedupe(hvns, true, 5), lvns: dedupe(lvns, false, 4) };
+}
+
+/**
+ * Impulse HVN + FVG pullback setups:
+ * 1. find a sharp impulse leg (swing-to-swing move of >= minLegAtr * ATR),
+ * 2. profile the volume across that leg and locate its heavy nodes,
+ * 3. keep nodes that coincide with an FVG opened during the leg,
+ * 4. entry zone = node band ∩ FVG; a pullback into the zone that bounces away
+ *    signals a trade in the impulse direction, targeting the next heavy volume
+ *    cluster along the move (or the impulse extreme).
+ */
+export function detectHvnFvgPullbacks(
+  candles: Candle[],
+  swings: SwingPoint[],
+  fvgs: FairValueGap[],
+  atr14: (number | null)[],
+  minLegAtr = 3,
+  maxAgeBars = 150,
+): HvnFvgPullback[] {
+  const n = candles.length;
+  const atrEnd = atr14[n - 1];
+  if (n < 30 || atrEnd === null || atrEnd <= 0) return [];
+
+  const setups: HvnFvgPullback[] = [];
+  const ordered = [...swings].sort((a, b) => a.index - b.index);
+
+  for (const direction of ["bullish", "bearish"] as const) {
+    const bull = direction === "bullish";
+    // most recent swing-to-swing leg in this direction that is sharp enough
+    let leg: { start: SwingPoint; end: SwingPoint } | null = null;
+    for (let i = ordered.length - 1; i > 0 && !leg; i--) {
+      const end = ordered[i];
+      if (end.type !== (bull ? "high" : "low") || n - 1 - end.index > maxAgeBars) continue;
+      for (let j = i - 1; j >= 0; j--) {
+        const start = ordered[j];
+        if (start.type !== (bull ? "low" : "high")) continue;
+        const move = bull ? end.price - start.price : start.price - end.price;
+        if (move >= minLegAtr * atrEnd && end.index - start.index >= 5) leg = { start, end };
+        break; // only pair with the nearest opposite swing
+      }
+    }
+    if (!leg) continue;
+
+    const legCandles = candles.slice(leg.start.index, leg.end.index + 1);
+    const binCount = Math.min(30, Math.max(10, legCandles.length));
+    const profile = computeVolumeProfile(legCandles, binCount);
+    const binSize = (Math.max(...legCandles.map((c) => c.high)) - Math.min(...legCandles.map((c) => c.low))) / binCount || 1;
+
+    // FVGs opened during the leg, in the leg direction
+    const legFvgs = fvgs.filter((g) => g.direction === direction && g.index >= leg.start.index && g.index <= leg.end.index);
+
+    // strongest HVN inside the leg that coincides with one of those FVGs
+    let match: { node: VolumeNode; fvg: FairValueGap } | null = null;
+    for (const node of [...profile.hvns].sort((a, b) => b.strength - a.strength)) {
+      const fvg = legFvgs.find((g) => node.price + 1.5 * binSize >= g.bottom && node.price - 1.5 * binSize <= g.top);
+      if (fvg) {
+        match = { node, fvg };
+        break;
+      }
+    }
+    if (!match) continue;
+
+    let zoneBottom = Math.max(match.fvg.bottom, match.node.price - 1.5 * binSize);
+    let zoneTop = Math.min(match.fvg.top, match.node.price + 1.5 * binSize);
+    if (zoneTop <= zoneBottom) {
+      zoneBottom = match.node.price - 1.5 * binSize;
+      zoneTop = match.node.price + 1.5 * binSize;
+    }
+
+    // target: the next heavy volume cluster along the move, else the leg extreme
+    const nextHvn = bull
+      ? profile.hvns.filter((h) => h.price > zoneTop + binSize).sort((a, b) => a.price - b.price)[0]
+      : profile.hvns.filter((h) => h.price < zoneBottom - binSize).sort((a, b) => b.price - a.price)[0];
+    const target = nextHvn ? nextHvn.price : leg.end.price;
+
+    // state from price action after the impulse completed
+    let touched = false;
+    let state: HvnFvgPullback["state"] = "forming";
+    for (let i = leg.end.index + 1; i < n; i++) {
+      const c = candles[i];
+      const closedThrough = bull ? c.close < zoneBottom - 0.25 * atrEnd : c.close > zoneTop + 0.25 * atrEnd;
+      if (closedThrough) {
+        state = "invalidated";
+        break;
+      }
+      const inZone = bull ? c.low <= zoneTop : c.high >= zoneBottom;
+      if (inZone) {
+        touched = true;
+        state = "in_pullback";
+      } else if (touched) {
+        const bounced = bull ? c.close > zoneTop : c.close < zoneBottom;
+        if (bounced) state = "bounced";
+      }
+    }
+
+    setups.push({
+      kind: "hvn_fvg_pullback",
+      direction,
+      impulseStartIndex: leg.start.index,
+      impulseEndIndex: leg.end.index,
+      impulseStartTime: leg.start.time,
+      impulseEndTime: leg.end.time,
+      impulseStart: leg.start.price,
+      impulseEnd: leg.end.price,
+      node: match.node,
+      fvg: match.fvg,
+      zoneTop,
+      zoneBottom,
+      target,
+      state,
+    });
+  }
+
+  return setups;
 }
 
 /**

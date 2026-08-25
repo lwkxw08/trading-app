@@ -72,6 +72,7 @@ export async function generateAnalysis(
     trend: analysis.trend,
     higherTimeframeTrend: analysis.higherTimeframeTrend,
     volumeProfile: { poc: analysis.volumeProfile.poc, vah: analysis.volumeProfile.vah, val: analysis.volumeProfile.val, hvns: analysis.volumeProfile.hvns, lvns: analysis.volumeProfile.lvns },
+    hvnFvgPullbackSetups: analysis.hvnFvgPullbacks,
     unfilledFvgs: analysis.fvgs.filter((g) => !g.filled).slice(-8),
     activeOrderBlocks: analysis.orderBlocks.filter((b) => !b.mitigated).slice(-8),
     recentSwings: analysis.swings.slice(-8),
@@ -172,6 +173,7 @@ export async function chatOnAnalysis(
     trend: analysis.trend,
     higherTimeframeTrend: analysis.higherTimeframeTrend,
     volumeProfile: { poc: analysis.volumeProfile.poc, vah: analysis.volumeProfile.vah, val: analysis.volumeProfile.val, hvns: analysis.volumeProfile.hvns, lvns: analysis.volumeProfile.lvns },
+    hvnFvgPullbackSetups: analysis.hvnFvgPullbacks,
     unfilledFvgs: analysis.fvgs.filter((g) => !g.filled).slice(-8),
     activeOrderBlocks: analysis.orderBlocks.filter((b) => !b.mitigated).slice(-8),
     recentSwings: analysis.swings.slice(-8),
@@ -199,6 +201,63 @@ export async function chatOnAnalysis(
     messages,
     1200,
   );
+}
+
+export interface StopAdvice {
+  recommendedStop: number;
+  rationale: string;
+  alternatives: string;
+}
+
+/**
+ * AI stop-placement advice: Claude receives the trade plan (entry, TP,
+ * direction) plus deterministic stop candidates derived from structure and
+ * must recommend one of those candidates — it never invents its own level.
+ */
+export async function suggestStopAdvice(
+  analysis: StrategyAnalysis,
+  plan: { direction: "long" | "short"; entry: number; takeProfit: number },
+  candidates: { label: string; price: number; basis: string }[],
+): Promise<StopAdvice> {
+  if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
+  if (candidates.length === 0) throw new Error("No stop candidates for this plan");
+
+  const context = {
+    symbol: analysis.symbol,
+    timeframe: analysis.timeframe,
+    lastPrice: analysis.lastPrice,
+    atr14: analysis.trend.atr14,
+    trend: analysis.trend,
+    higherTimeframeTrend: analysis.higherTimeframeTrend,
+    plan,
+    stopCandidates: candidates.map((c) => ({
+      ...c,
+      riskRewardRatio: Math.abs(c.price - plan.entry) > 0 ? Math.abs(plan.takeProfit - plan.entry) / Math.abs(c.price - plan.entry) : 0,
+    })),
+    volumeProfile: { poc: analysis.volumeProfile.poc, vah: analysis.volumeProfile.vah, val: analysis.volumeProfile.val, hvns: analysis.volumeProfile.hvns, lvns: analysis.volumeProfile.lvns },
+    hvnFvgPullbackSetups: analysis.hvnFvgPullbacks,
+    recentSwings: analysis.swings.slice(-8),
+  };
+
+  const text = await callClaude(
+    [
+      "You advise on stop-loss placement for a planned trade on a trading-intelligence platform.",
+      "Input: the trade plan (direction, entry, take profit), deterministic stop candidates each derived from a detected structure (with the resulting risk:reward), and the surrounding technical context.",
+      "Recommend exactly ONE of the provided candidate prices — never invent a different level. Weigh structure quality (is the stop behind something real?), stop distance vs ATR (too tight gets wicked out, too wide wrecks R:R), and the resulting risk:reward against the take profit.",
+      "Analysis and education only, not financial advice.",
+      'Respond ONLY with JSON: {"recommendedStop": number (one of the candidate prices), "rationale": string (2-3 sentences), "alternatives": string (1-2 sentences on when a different candidate would be better)}.',
+    ].join(" "),
+    JSON.stringify(context),
+    700,
+  );
+  const parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as Partial<StopAdvice>;
+  const recommended = typeof parsed.recommendedStop === "number" ? parsed.recommendedStop : candidates[0].price;
+  const matched = candidates.reduce((best, c) => (Math.abs(c.price - recommended) < Math.abs(best.price - recommended) ? c : best), candidates[0]);
+  return {
+    recommendedStop: matched.price,
+    rationale: parsed.rationale ?? "",
+    alternatives: parsed.alternatives ?? "",
+  };
 }
 
 export interface JournalReview {
