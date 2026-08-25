@@ -223,6 +223,8 @@ function detectVolumeNodes(bins: VolumeProfileLevel[]): { hvns: VolumeNode[]; lv
  * 4. entry zone = node band ∩ FVG; a pullback into the zone that bounces away
  *    signals a trade in the impulse direction, targeting the next heavy volume
  *    cluster along the move (or the impulse extreme).
+ * 5. only the first pullback is tradable — once the zone has been tested and
+ *    left, the node is spent; a second test invalidates the setup.
  */
 export function detectHvnFvgPullbacks(
   candles: Candle[],
@@ -290,6 +292,8 @@ export function detectHvnFvgPullbacks(
 
     // state from price action after the impulse completed
     let touched = false;
+    let wasInZone = false;
+    let zoneEntries = 0;
     let state: HvnFvgPullback["state"] = "forming";
     for (let i = leg.end.index + 1; i < n; i++) {
       const c = candles[i];
@@ -299,6 +303,14 @@ export function detectHvnFvgPullbacks(
         break;
       }
       const inZone = bull ? c.low <= zoneTop : c.high >= zoneBottom;
+      if (inZone && !wasInZone) {
+        zoneEntries++;
+        if (zoneEntries >= 2) {
+          // node already tested once — the level is spent
+          state = "invalidated";
+          break;
+        }
+      }
       if (inZone) {
         touched = true;
         state = "in_pullback";
@@ -306,6 +318,7 @@ export function detectHvnFvgPullbacks(
         const bounced = bull ? c.close > zoneTop : c.close < zoneBottom;
         if (bounced) state = "bounced";
       }
+      wasInZone = inZone;
     }
 
     setups.push({
