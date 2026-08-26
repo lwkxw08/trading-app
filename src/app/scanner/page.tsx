@@ -313,6 +313,7 @@ export default function Scanner() {
                       {w.state.replace(/_/g, " ")}
                     </span>
                   </div>
+                  <p className="mt-0.5 text-[11px] text-accent">{TREND_BREAK_STRATEGY_NAME}</p>
                   <p className={`mt-1 text-xs font-semibold ${w.direction === "bullish" ? "text-bull" : "text-bear"}`}>
                     {w.direction === "bullish" ? "Bullish" : "Bearish"} · 15m break confirmed ({w.bosCount} BoS {w.priorTrend} run)
                   </p>
@@ -335,6 +336,7 @@ export default function Scanner() {
                     watch · {opp.score}/{minScore}
                   </span>
                 </div>
+                <p className="mt-0.5 text-[11px] text-accent">{scanStrategyName}</p>
                 <p className={`mt-1 text-xs font-semibold ${opp.direction === "long" ? "text-bull" : "text-bear"}`}>
                   {opp.direction.toUpperCase()} · score {opp.score} — {minScore - opp.score} below your threshold
                 </p>
