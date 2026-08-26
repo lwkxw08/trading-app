@@ -204,6 +204,21 @@ function simulate(
 
 function summarize(symbol: string, tf: Timeframe, candles: Candle[], trades: BacktestTrade[]): BacktestResult {
   const start = Math.min(MIN_HISTORY, candles.length);
+  return summarizeTrades(
+    symbol,
+    tf,
+    { barsTested: Math.max(0, candles.length - start), firstBarTime: candles[start]?.time ?? 0, lastBarTime: candles[candles.length - 1]?.time ?? 0 },
+    trades,
+  );
+}
+
+/** Builds the aggregate result from closed trades — pure, so chunked runs can assemble it client-side. */
+export function summarizeTrades(
+  symbol: string,
+  tf: Timeframe,
+  meta: { barsTested: number; firstBarTime: number; lastBarTime: number },
+  trades: BacktestTrade[],
+): BacktestResult {
   const rs = trades.map((t) => t.rMultiple);
   const wins = trades.filter((t) => t.rMultiple > 0);
   const losses = trades.filter((t) => t.rMultiple <= 0);
@@ -224,9 +239,9 @@ function summarize(symbol: string, tf: Timeframe, candles: Candle[], trades: Bac
   return {
     symbol,
     timeframe: tf,
-    barsTested: Math.max(0, candles.length - start),
-    firstBarTime: candles[start]?.time ?? 0,
-    lastBarTime: candles[candles.length - 1]?.time ?? 0,
+    barsTested: meta.barsTested,
+    firstBarTime: meta.firstBarTime,
+    lastBarTime: meta.lastBarTime,
     trades,
     totalTrades: trades.length,
     wins: wins.length,
@@ -289,6 +304,97 @@ function makeSignalFn(
       htfWindow = htfCandles.slice(Math.max(0, htfEnd - WINDOW), htfEnd);
     }
     return signalAt(symbol, tf, window, htfWindow, htf, config, minScore);
+  };
+}
+
+export interface BacktestSegment {
+  trades: BacktestTrade[];
+  /** Bar time to resume entry evaluation from, or null when the run is complete. */
+  nextTime: number | null;
+  done: boolean;
+  barsTested: number;
+  firstBarTime: number;
+  lastBarTime: number;
+}
+
+/**
+ * Runs one slice of a backtest: entries are evaluated only for bars in
+ * [fromTime, fromTime + entryBars), but an open position is walked forward
+ * until it closes, so stitching consecutive segments (resuming each at the
+ * previous segment's nextTime) reproduces the full run exactly. This keeps
+ * each request under serverless CPU limits on long histories.
+ */
+export function runBacktestSegment(
+  symbol: string,
+  tf: Timeframe,
+  candles: Candle[],
+  htfCandles: Candle[] | undefined,
+  htf: Timeframe | undefined,
+  config: BacktestConfig,
+  fromTime: number | null,
+  entryBars: number,
+): BacktestSegment {
+  const minScore = config.strategyType === "custom" ? 0 : config.minScore;
+  const getSignal = makeSignalFn(symbol, tf, candles, htfCandles, htf, config, minScore);
+  const start = Math.min(MIN_HISTORY, candles.length);
+  let from = start;
+  if (fromTime !== null) {
+    while (from < candles.length && candles[from].time < fromTime) from++;
+  }
+  const entryEnd = Math.min(from + entryBars, candles.length);
+
+  const trades: BacktestTrade[] = [];
+  let pos: OpenPosition | null = null;
+  let i = from;
+  for (; i < candles.length; i++) {
+    if (!pos && i >= entryEnd) break;
+    const bar = candles[i];
+
+    if (pos) {
+      const hitStop = pos.direction === "long" ? bar.low <= pos.stopLoss : bar.high >= pos.stopLoss;
+      const hitTarget = pos.direction === "long" ? bar.high >= pos.takeProfit : bar.low <= pos.takeProfit;
+      if (hitStop) {
+        trades.push(closeTrade(pos, pos.stopLoss, bar.time, "stop_loss", i, config));
+        pos = null;
+      } else if (hitTarget) {
+        trades.push(closeTrade(pos, pos.takeProfit, bar.time, "take_profit", i, config));
+        pos = null;
+      } else if (i - pos.entryIndex >= config.maxHoldBars) {
+        trades.push(closeTrade(pos, bar.close, bar.time, "time_exit", i, config));
+        pos = null;
+      }
+      continue;
+    }
+
+    const signal = getSignal(i);
+    if (signal && signal.score >= minScore) {
+      const sign = signal.direction === "long" ? 1 : -1;
+      pos = {
+        direction: signal.direction,
+        entryTime: bar.time,
+        entryPrice: bar.close * (1 + (sign * config.slippagePct) / 100),
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        score: signal.score,
+        entryIndex: i,
+        regime: signal.regime ?? null,
+      };
+    }
+  }
+  if (pos) {
+    const lastBar = candles[candles.length - 1];
+    trades.push(closeTrade(pos, lastBar.close, lastBar.time, "end_of_data", candles.length - 1, config));
+    i = candles.length;
+  }
+
+  const done = i >= candles.length;
+  return {
+    trades,
+    nextTime: done ? null : candles[i].time,
+    done,
+    barsTested: Math.max(0, candles.length - start),
+    firstBarTime: candles[start]?.time ?? 0,
+    lastBarTime: candles[candles.length - 1]?.time ?? 0,
   };
 }
 

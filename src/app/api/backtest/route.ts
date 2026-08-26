@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
       feePct,
       slippagePct,
     };
-    const thresholds = [45, 50, 55, 60, 65, 70, 75, 80];
+    const thresholds = [45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
     if (walkforward) {
       const wf = runWalkForward(symbol.toUpperCase(), tf, candles, htfCandles, htf, config, folds, thresholds);
       return NextResponse.json({ walkforward: wf });

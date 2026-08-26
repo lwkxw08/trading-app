@@ -2,17 +2,71 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import SymbolInput from "@/components/SymbolInput";
-import { postJson } from "@/components/api";
+import { getJson, postJson } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
 import type { BacktestReview } from "@/lib/ai/analyze";
-import type { BacktestResult, SweepPoint, WalkForwardResult } from "@/lib/backtest/engine";
+import {
+  runBacktestSegment,
+  runBacktestSweep,
+  runWalkForward,
+  summarizeTrades,
+  type BacktestConfig,
+  type BacktestResult,
+  type BacktestTrade,
+  type SweepPoint,
+  type WalkForwardResult,
+} from "@/lib/backtest/engine";
 import { REGIME_LABELS, type RegimeLabel } from "@/lib/strategies/regime";
 import { runMonteCarlo } from "@/lib/backtest/montecarlo";
-import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
+import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy, type WeightedUserCondition } from "@/lib/strategies/custom";
 import type { RiskSettings } from "@/lib/strategies/risk";
 import { describeStopRule, describeTargetRule } from "@/lib/strategies/risk";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
+
+// Backtests run in the browser: the server only supplies candle history
+// (pure I/O), so long simulations never hit the host's per-request CPU limit.
+// The simulation is sliced so the UI can breathe and show progress.
+const CHUNK_ENTRY_BARS = 300;
+const WF_THRESHOLDS = [45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
+
+interface History {
+  symbol: string;
+  tf: Timeframe;
+  htf: Timeframe;
+  candles: Candle[];
+  htfCandles: Candle[];
+}
+
+function fetchHistory(symbol: string, tf: Timeframe, bars: number): Promise<History> {
+  return getJson<History>(`/api/history?symbol=${encodeURIComponent(symbol)}&tf=${tf}&bars=${bars}`, 2);
+}
+
+const nextTick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+async function runClientBacktest(
+  symbol: string,
+  tf: Timeframe,
+  bars: number,
+  config: BacktestConfig,
+  onProgress?: (done: number, total: number) => void,
+): Promise<BacktestResult> {
+  const h = await fetchHistory(symbol, tf, bars);
+  const trades: BacktestTrade[] = [];
+  const total = Math.max(1, Math.ceil(h.candles.length / CHUNK_ENTRY_BARS));
+  let fromTime: number | null = null;
+  let meta = { barsTested: 0, firstBarTime: 0, lastBarTime: 0 };
+  for (let i = 0; i < 100; i++) {
+    const seg = runBacktestSegment(symbol, tf, h.candles, h.htfCandles, h.htf, config, fromTime, CHUNK_ENTRY_BARS);
+    trades.push(...seg.trades);
+    meta = { barsTested: seg.barsTested, firstBarTime: seg.firstBarTime, lastBarTime: seg.lastBarTime };
+    onProgress?.(Math.min(i + 1, total), total);
+    if (seg.done || seg.nextTime === null) break;
+    fromTime = seg.nextTime;
+    await nextTick();
+  }
+  return summarizeTrades(symbol, tf, meta, trades);
+}
 
 interface ConditionState {
   enabled: boolean;
@@ -86,6 +140,7 @@ export default function BacktestPage() {
   const [sweep, setSweep] = useState<SweepPoint[] | null>(null);
   const [walkforward, setWalkforward] = useState<WalkForwardResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedRuns, setSavedRuns] = useState<SavedRun[]>([]);
   const [aiReview, setAiReview] = useState<BacktestReview | null>(null);
@@ -137,28 +192,34 @@ export default function BacktestPage() {
       setWalkforward(null);
       setAiReview(null);
       setAiReviewError(null);
-      postJson<{ sweep?: SweepPoint[]; walkforward?: WalkForwardResult; result?: BacktestResult }>("/api/backtest", {
-        symbol: symbol.toUpperCase(),
-        tf,
+      setProgress(null);
+      const sym = symbol.toUpperCase();
+      const config: BacktestConfig = {
         strategyType,
         custom: strategyType === "custom" ? custom : null,
         minScore,
         direction,
-        ...(activeRegimes ? { regimes: activeRegimes } : {}),
+        regimes: activeRegimes ?? null,
         maxHoldBars,
-        bars,
         feePct,
         slippagePct,
-        sweep: mode === "sweep",
-        walkforward: mode === "walkforward",
-      })
-        .then((d) => {
-          if (mode === "sweep") setSweep(d.sweep ?? null);
-          else if (mode === "walkforward") setWalkforward(d.walkforward ?? null);
-          else setResult(d.result ?? null);
-        })
+      };
+      const request =
+        mode === "run"
+          ? runClientBacktest(sym, tf, bars, config, (done, total) => setProgress(`${done}/${total}`)).then((r) =>
+              setResult(r),
+            )
+          : fetchHistory(sym, tf, bars).then(async (h) => {
+              await nextTick(); // let the loading state paint before the heavy compute
+              if (mode === "sweep") setSweep(runBacktestSweep(sym, tf, h.candles, h.htfCandles, h.htf, config, WF_THRESHOLDS));
+              else setWalkforward(runWalkForward(sym, tf, h.candles, h.htfCandles, h.htf, config, 4, WF_THRESHOLDS));
+            });
+      request
         .catch((e) => setError(e.message))
-        .finally(() => setLoading(false));
+        .finally(() => {
+          setLoading(false);
+          setProgress(null);
+        });
     },
     [symbol, tf, strategyType, custom, minScore, direction, activeRegimes, maxHoldBars, bars, feePct, slippagePct],
   );
@@ -239,24 +300,20 @@ export default function BacktestPage() {
     Promise.all(
       strategies.flatMap((st) =>
         symbols.map((sym) =>
-          postJson<{ result: BacktestResult }>("/api/backtest", {
-            symbol: sym,
-            tf,
+          runClientBacktest(sym, tf, Math.min(bars, 1000), {
             strategyType: st.strategyType,
             custom: st.custom,
             minScore,
             direction,
-            ...(activeRegimes ? { regimes: activeRegimes } : {}),
+            regimes: activeRegimes ?? null,
             maxHoldBars,
-            bars: Math.min(bars, 1000),
             feePct,
             slippagePct,
           })
             .catch((e) => {
               throw new Error(`${st.label} / ${sym}: ${e instanceof Error ? e.message : "failed"}`);
             })
-            .then((d) => {
-              const res: BacktestResult = d.result;
+            .then((res) => {
               return {
                 strategy: st.label,
                 symbol: sym,
@@ -367,7 +424,7 @@ export default function BacktestPage() {
             {strategyType === "builtin" ? (
               <div className="flex items-center gap-2 text-sm">
                 <label className="text-xs text-muted">Min confluence score</label>
-                <input type="range" min={40} max={90} value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} className="w-32 accent-[var(--accent)]" />
+                <input type="range" min={40} max={100} value={minScore} onChange={(e) => setMinScore(Number(e.target.value))} className="w-32 accent-[var(--accent)]" />
                 <span className="text-xs">{minScore}</span>
               </div>
             ) : (
@@ -530,7 +587,7 @@ export default function BacktestPage() {
                 disabled={loading || !canRun}
                 className="rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90 disabled:opacity-50"
               >
-                {loading ? "Backtesting…" : "Run backtest"}
+                {loading ? (progress ? `Backtesting… ${progress}` : "Backtesting…") : "Run backtest"}
               </button>
               {strategyType === "builtin" && (
                 <>

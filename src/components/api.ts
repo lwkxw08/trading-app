@@ -6,13 +6,30 @@ export function apiUrl(path: string): string {
   return `${window.location.origin}${path}`;
 }
 
+/** GET JSON with the same defensive parsing/retry behaviour as postJson. */
+export async function getJson<T>(path: string, retries = 1): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    const r = await fetch(apiUrl(path));
+    const text = await r.text();
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      if (attempt < retries) continue;
+      throw new Error("The server couldn't complete this request. Please retry.");
+    }
+    if (!r.ok) throw new Error((data as { error?: string }).error ?? "request failed");
+    return data as T;
+  }
+}
+
 /**
  * POST JSON and parse a JSON response defensively. Heavy requests (e.g.
  * backtests) can occasionally exceed the host's compute limit, which returns
  * an HTML/plain-text error page instead of JSON — retry once, then surface a
  * readable message rather than a JSON parse error.
  */
-export async function postJson<T>(path: string, body: unknown): Promise<T> {
+export async function postJson<T>(path: string, body: unknown, retries = 1): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     const r = await fetch(apiUrl(path), {
       method: "POST",
@@ -24,7 +41,7 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
     try {
       data = JSON.parse(text);
     } catch {
-      if (attempt < 1) continue;
+      if (attempt < retries) continue;
       throw new Error(
         "The server couldn't complete this request (it likely hit the hosting compute limit). Try fewer history bars or a higher timeframe, then retry.",
       );
