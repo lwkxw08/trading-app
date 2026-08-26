@@ -21,6 +21,12 @@ const MEXC_TF_MAP: Record<Timeframe, string> = {
   "1d": "1d", "1w": "1W",
 };
 
+const TF_SECONDS_MAP: Record<Timeframe, number> = {
+  "1m": 60, "5m": 300, "15m": 900, "30m": 1800,
+  "1h": 3600, "2h": 7200, "4h": 14400,
+  "1d": 86400, "1w": 604800,
+};
+
 export const DEFAULT_CRYPTO_UNIVERSE: { symbol: string; name: string }[] = [
   { symbol: "BTCUSDT", name: "Bitcoin" },
   { symbol: "ETHUSDT", name: "Ethereum" },
@@ -85,7 +91,9 @@ function aggregateCandles(candles: Candle[], seconds: number): Candle[] {
 async function fetchMexcCandles(symbol: string, timeframe: Timeframe, limit: number, endTime?: number): Promise<Candle[]> {
   const twoHour = timeframe === "2h";
   const mexcLimit = Math.min(twoHour ? limit * 2 : limit, 1000);
-  const end = endTime !== undefined ? `&endTime=${endTime}` : "";
+  // MEXC ignores endTime unless startTime is also supplied.
+  const baseTfMs = (twoHour ? 3600 : TF_SECONDS_MAP[timeframe]) * 1000;
+  const end = endTime !== undefined ? `&startTime=${endTime + 1 - mexcLimit * baseTfMs}&endTime=${endTime}` : "";
   const res = await fetch(
     `${MEXC_HOST}/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${MEXC_TF_MAP[timeframe]}&limit=${mexcLimit}${end}`,
     { next: { revalidate: 30 } },

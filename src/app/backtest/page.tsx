@@ -62,6 +62,7 @@ async function runClientBacktest(
     meta = { barsTested: seg.barsTested, firstBarTime: seg.firstBarTime, lastBarTime: seg.lastBarTime };
     onProgress?.(Math.min(i + 1, total), total);
     if (seg.done || seg.nextTime === null) break;
+    if (fromTime !== null && seg.nextTime <= fromTime) break; // guard against malformed (non-monotonic) history
     fromTime = seg.nextTime;
     await nextTick();
   }

@@ -23,8 +23,11 @@ export async function getExtendedHistory(
       oldest,
       Math.min(totalBars - candles.length, pageSize),
     );
-    if (page.length === 0) break; // start of available history
-    candles = [...page, ...candles];
+    // Some providers ignore the end-time cursor and return the latest window
+    // again — keep only candles strictly older than what we already have.
+    const older = page.filter((c) => c.time < oldest);
+    if (older.length === 0) break; // start of available history
+    candles = [...older, ...candles];
   }
   return candles.slice(-totalBars);
 }
