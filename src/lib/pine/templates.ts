@@ -1,4 +1,4 @@
-export type PineStrategyKind = "ema_cross" | "rsi_reversal" | "fvg_signals" | "macd_momentum";
+export type PineStrategyKind = "ema_cross" | "rsi_reversal" | "fvg_signals" | "macd_momentum" | "trend_break";
 
 export interface PineConfig {
   kind: PineStrategyKind;
@@ -20,6 +20,11 @@ export const PINE_TEMPLATES: { kind: PineStrategyKind; label: string; descriptio
   { kind: "rsi_reversal", label: "RSI Reversal", description: "Buy oversold / sell overbought RSI turns" },
   { kind: "fvg_signals", label: "Fair Value Gap Signals", description: "Marks FVG zones and signals on retests" },
   { kind: "macd_momentum", label: "MACD Momentum", description: "Signals on MACD histogram flips aligned with trend" },
+  {
+    kind: "trend_break",
+    label: "15m Trend Break → 1m FVG",
+    description: "Run on a 1m chart: 15m trend break + CHoCH, then 1m CHoCH → FVG midpoint entry, swing SL, 3R TP",
+  },
 ];
 
 /**
@@ -29,6 +34,7 @@ export const PINE_TEMPLATES: { kind: PineStrategyKind; label: string; descriptio
  * engine (ATR-based stop, R-multiple target).
  */
 export function generatePineScript(cfg: PineConfig): string {
+  if (cfg.kind === "trend_break") return trendBreakPineScript(cfg);
   const riskPercent = cfg.riskPercent ?? 1;
   const atrMult = cfg.atrStopMultiplier ?? 1.5;
   const rewardMult = cfg.rewardMultiple ?? 2;
@@ -85,6 +91,208 @@ alertcondition(sellSignal, title="Sell signal", message="${sanitize(cfg.name)}: 
 `;
 }
 
+/**
+ * Dedicated multi-timeframe indicator mirroring the app's "15m Trend Break →
+ * 1m FVG" detector: the 15m context (≥2 BoS run, trendline through the higher
+ * lows / lower highs, trendline break + CHoCH) arms a 1m state machine (first
+ * CHoCH → first FVG in its direction → midpoint pullback entry) with the SL
+ * beyond the recent 1m swing and the TP at an R-multiple of risk.
+ * Run it on a 1m chart; the 15m leg is pulled via request.security.
+ */
+function trendBreakPineScript(cfg: PineConfig): string {
+  const riskPercent = cfg.riskPercent ?? 1;
+  const rewardMult = cfg.rewardMultiple ?? 3;
+
+  return `//@version=6
+indicator("${sanitize(cfg.name)}", overlay=true, max_lines_count=500, max_boxes_count=500)
+
+// Run this indicator on a 1m chart. The 15m context confirms on the close of
+// each 15m bar (no lookahead), then the 1m leg looks for the first CHoCH, the
+// first FVG in its direction, and signals on the pullback to the FVG midpoint.
+
+// ── Inputs ─────────────────────────────────────────────────────────────
+accountSize = input.float(10000, "Account size", minval=1)
+riskPct     = input.float(${riskPercent}, "Risk % per trade", minval=0.1, maxval=10, step=0.1)
+rewardMult  = input.float(${rewardMult}, "Reward multiple (R)", minval=0.5, step=0.5)
+htfTf       = input.timeframe("15", "Context timeframe")
+minBos      = input.int(2, "Min BoS in the prior 15m trend", minval=1)
+minGapAtr   = input.float(0.15, "Min FVG size (ATR ratio)", minval=0.0, step=0.05)
+slBufAtr    = input.float(0.1, "SL buffer beyond swing (ATR ratio)", minval=0.0, step=0.05)
+
+// ── Structure tracking: swings, BoS/CHoCH, trendline break ─────────────
+// Returns [chochDir, setupDir]: chochDir = ±1 on the bar a CHoCH confirms,
+// setupDir = ±1 on the bar the full context confirms (≥minBos BoS run, then
+// a close through the trendline and a CHoCH in the new direction).
+structureCtx() =>
+    ph = ta.pivothigh(high, 5, 5)
+    pl = ta.pivotlow(low, 5, 5)
+    // structure levels (consumed when broken)
+    var float lastHigh = na
+    var float lastLow  = na
+    // trendline anchors (kept across breaks)
+    var float tlLow1  = na
+    var float tlLow2  = na
+    var int   tlLow1Bar = na
+    var int   tlLow2Bar = na
+    var float tlHigh1 = na
+    var float tlHigh2 = na
+    var int   tlHigh1Bar = na
+    var int   tlHigh2Bar = na
+    if not na(ph)
+        lastHigh := ph
+        tlHigh1 := tlHigh2
+        tlHigh1Bar := tlHigh2Bar
+        tlHigh2 := ph
+        tlHigh2Bar := bar_index - 5
+    if not na(pl)
+        lastLow := pl
+        tlLow1 := tlLow2
+        tlLow1Bar := tlLow2Bar
+        tlLow2 := pl
+        tlLow2Bar := bar_index - 5
+    // trendline through the last two ascending lows / descending highs
+    float bullTl = na
+    if not na(tlLow1) and not na(tlLow2) and tlLow2 > tlLow1
+        bullTl := tlLow2 + (tlLow2 - tlLow1) / (tlLow2Bar - tlLow1Bar) * (bar_index - tlLow2Bar)
+    float bearTl = na
+    if not na(tlHigh1) and not na(tlHigh2) and tlHigh2 < tlHigh1
+        bearTl := tlHigh2 + (tlHigh2 - tlHigh1) / (tlHigh2Bar - tlHigh1Bar) * (bar_index - tlHigh2Bar)
+    // BoS / CHoCH bookkeeping
+    var int trend = 0
+    var int bosCount = 0
+    var bool pendingBear = false
+    var bool pendingBull = false
+    int chochDir = 0
+    // a close through the trendline against an established run arms the setup
+    if trend == 1 and bosCount >= minBos and not na(bullTl) and close < bullTl
+        pendingBear := true
+    if trend == -1 and bosCount >= minBos and not na(bearTl) and close > bearTl
+        pendingBull := true
+    if not na(lastHigh) and close > lastHigh
+        if trend == -1
+            chochDir := 1
+            bosCount := 0
+        else
+            bosCount := bosCount + 1
+        trend := 1
+        lastHigh := na
+    if not na(lastLow) and close < lastLow
+        if trend == 1
+            chochDir := -1
+            bosCount := 0
+        else
+            bosCount := bosCount + 1
+        trend := -1
+        lastLow := na
+    int setupDir = 0
+    if chochDir == -1 and pendingBear
+        setupDir := -1
+    if chochDir == 1 and pendingBull
+        setupDir := 1
+    if chochDir != 0
+        pendingBear := false
+        pendingBull := false
+    [chochDir, setupDir]
+
+// 15m context leg (confirms on 15m close)
+[htfChoch, htfSetupDir] = request.security(syminfo.tickerid, htfTf, structureCtx(), gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+// 1m execution leg
+[ltfChoch, ltfSetupDir] = structureCtx()
+
+atr1 = ta.atr(14)
+pl1 = ta.pivotlow(low, 5, 5)
+ph1 = ta.pivothigh(high, 5, 5)
+var float lastSwingLow = na
+var float lastSwingHigh = na
+if not na(pl1)
+    lastSwingLow := pl1
+if not na(ph1)
+    lastSwingHigh := ph1
+lowest20 = ta.lowest(low, 20)
+highest20 = ta.highest(high, 20)
+
+// ── Setup state machine ────────────────────────────────────────────────
+// 0 idle · 1 awaiting 1m CHoCH · 2 awaiting FVG · 3 awaiting pullback · 4 triggered
+var int state = 0
+var int dir = 0
+var float entry = na
+var float sl = na
+var float tp = na
+var float fvgTop = na
+var float fvgBot = na
+
+newSetup = htfSetupDir != 0 and htfSetupDir[1] == 0
+if newSetup
+    state := 1
+    dir := htfSetupDir
+    entry := na
+    sl := na
+    tp := na
+    fvgTop := na
+    fvgBot := na
+
+if state == 1 and ltfChoch == dir
+    state := 2
+
+bullFvg = low > high[2] and (low - high[2]) >= minGapAtr * atr1
+bearFvg = high < low[2] and (low[2] - high) >= minGapAtr * atr1
+if state == 2 and ((dir == 1 and bullFvg) or (dir == -1 and bearFvg))
+    fvgTop := dir == 1 ? low : low[2]
+    fvgBot := dir == 1 ? high[2] : high
+    entry := (fvgTop + fvgBot) / 2
+    float swingBase = dir == 1 ? (na(lastSwingLow) ? lowest20 : lastSwingLow) : (na(lastSwingHigh) ? highest20 : lastSwingHigh)
+    sl := dir == 1 ? swingBase - slBufAtr * atr1 : swingBase + slBufAtr * atr1
+    tp := entry + dir * rewardMult * math.abs(entry - sl)
+    state := 3
+    box.new(bar_index - 1, fvgTop, bar_index + 40, fvgBot, bgcolor=color.new(dir == 1 ? color.green : color.red, 85), border_color=color.new(dir == 1 ? color.green : color.red, 60))
+    line.new(bar_index, entry, bar_index + 40, entry, color=color.new(color.blue, 0), style=line.style_dashed, width=1)
+    line.new(bar_index, sl, bar_index + 40, sl, color=color.new(color.red, 0), style=line.style_dashed, width=1)
+    line.new(bar_index, tp, bar_index + 40, tp, color=color.new(color.green, 0), style=line.style_dashed, width=1)
+
+// invalidation first (matches the app): SL side violated or close through the FVG
+bool invalidated = false
+if state == 3
+    invalidated := dir == 1 ? (low <= sl or close < fvgBot) : (high >= sl or close > fvgTop)
+
+buySignal  = state == 3 and not invalidated and dir == 1 and low <= entry
+sellSignal = state == 3 and not invalidated and dir == -1 and high >= entry
+if state == 3 and invalidated
+    state := 0
+if buySignal or sellSignal
+    state := 4
+
+// ── Position size ──────────────────────────────────────────────────────
+riskAmount = accountSize * riskPct / 100
+riskDist   = nz(math.abs(entry - sl))
+posSize    = riskDist > 0 ? riskAmount / riskDist : 0.0
+
+// ── Plots ──────────────────────────────────────────────────────────────
+plotshape(buySignal,  title="Buy",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="BUY")
+plotshape(sellSignal, title="Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   size=size.small, text="SELL")
+bgcolor(state == 1 ? color.new(color.yellow, 92) : state == 2 ? color.new(color.orange, 92) : state == 3 ? color.new(color.blue, 92) : na, title="Setup state")
+
+var table info = table.new(position.top_right, 2, 5, border_width=1)
+if barstate.islast
+    stateTxt = state == 0 ? "idle" : state == 1 ? "awaiting 1m CHoCH" : state == 2 ? "awaiting FVG" : state == 3 ? "awaiting pullback" : "triggered"
+    table.cell(info, 0, 0, "Setup state", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 0, stateTxt, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 1, "Entry (FVG mid)", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 1, na(entry) ? "—" : str.tostring(entry, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 2, "SL / TP", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 2, na(sl) ? "—" : str.tostring(sl, format.mintick) + " / " + str.tostring(tp, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 3, "Risk/trade", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 3, str.tostring(riskAmount, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 4, "Size (units)", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 4, str.tostring(posSize, "#.####"), text_color=color.white, bgcolor=color.new(color.gray, 60))
+
+// ── Alerts ─────────────────────────────────────────────────────────────
+alertcondition(buySignal,  title="Buy signal",  message="${sanitize(cfg.name)}: BUY {{ticker}} @ {{close}} (FVG midpoint pullback)")
+alertcondition(sellSignal, title="Sell signal", message="${sanitize(cfg.name)}: SELL {{ticker}} @ {{close}} (FVG midpoint pullback)")
+alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15m trend break confirmed on {{ticker}} — watching the 1m")
+`;
+}
+
 function inputsFor(cfg: PineConfig): string {
   switch (cfg.kind) {
     case "ema_cross":
@@ -105,6 +313,8 @@ slowLen = input.int(${cfg.slowLength ?? 26}, "MACD slow", minval=3)
 sigLen  = input.int(9, "MACD signal", minval=2)
 trendLen = input.int(200, "Trend EMA", minval=10)
 `;
+    case "trend_break":
+      return ""; // generated by trendBreakPineScript
   }
 }
 
@@ -156,6 +366,8 @@ plot(trendEma, "Trend EMA", color=color.new(color.purple, 0))
 buySignal  = ta.crossover(hist, 0) and close > trendEma
 sellSignal = ta.crossunder(hist, 0) and close < trendEma
 `;
+    case "trend_break":
+      return ""; // generated by trendBreakPineScript
   }
 }
 

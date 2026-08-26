@@ -5,7 +5,7 @@ import { generatePineScript } from "@/lib/pine/templates";
 export const runtime = "edge";
 
 const schema = z.object({
-  kind: z.enum(["ema_cross", "rsi_reversal", "fvg_signals", "macd_momentum"]),
+  kind: z.enum(["ema_cross", "rsi_reversal", "fvg_signals", "macd_momentum", "trend_break"]),
   name: z.string().min(1).max(60),
   fastLength: z.number().int().min(2).max(500).optional(),
   slowLength: z.number().int().min(3).max(500).optional(),
