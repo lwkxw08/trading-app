@@ -8,10 +8,34 @@ import { scoreOpportunities } from "@/lib/strategies/confluence";
 import { evaluateCustomStrategy, type CustomStrategy } from "@/lib/strategies/custom";
 import { customStrategySchema } from "@/lib/strategies/customSchema";
 import { analyze, higherTimeframe } from "@/lib/strategies/engine";
+import { detectTrendBreakSetup, trendBreakOpportunity } from "@/lib/strategies/trendBreak";
 import type { EconomicEvent } from "@/lib/calendar/types";
 import type { Opportunity } from "@/lib/strategies/types";
 
 export const runtime = "edge";
+
+async function runTrendBreakScan(symbols: string[]) {
+  const results = await Promise.allSettled(
+    symbols.map(async (symbol): Promise<Opportunity[]> => {
+      const provider = getProviderForSymbol(symbol);
+      const [htfCandles, ltfCandles] = await Promise.all([
+        provider.getCandles(symbol, "15m", 500),
+        provider.getCandles(symbol, "1m", 1000),
+      ]);
+      if (htfCandles.length < 60 || ltfCandles.length < 60) return [];
+      const setup = detectTrendBreakSetup(htfCandles, ltfCandles);
+      const opp = setup ? trendBreakOpportunity(symbol, setup) : null;
+      return opp ? [opp] : [];
+    }),
+  );
+
+  const opportunities = results
+    .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
+    .sort((a, b) => b.score - a.score);
+  const errors = results.filter((r) => r.status === "rejected").length;
+
+  return { tf: "1m" as Timeframe, scanned: symbols.length, errors, opportunities };
+}
 
 async function runScan(tf: Timeframe, symbols: string[], strategy: CustomStrategy | null) {
   const events: EconomicEvent[] = strategy ? [] : await getEconomicCalendar();
@@ -52,6 +76,10 @@ export async function GET(req: NextRequest) {
   const symbols = symbolsParam
     ? symbolsParam.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean).slice(0, 20)
     : defaultUniverse(isMarket(marketParam) ? marketParam : "crypto");
+
+  if (req.nextUrl.searchParams.get("setup") === "trendbreak") {
+    return NextResponse.json(await runTrendBreakScan(symbols));
+  }
 
   return NextResponse.json(await runScan(tf, symbols, null));
 }

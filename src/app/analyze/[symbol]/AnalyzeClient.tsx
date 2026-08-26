@@ -22,6 +22,7 @@ import type { NewsHeadline } from "@/lib/news/provider";
 import type { CustomEvaluation } from "@/lib/strategies/custom";
 import { REGIME_LABELS } from "@/lib/strategies/regime";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
+import { TREND_BREAK_STRATEGY_NAME, type TrendBreakSetup } from "@/lib/strategies/trendBreak";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
@@ -58,6 +59,9 @@ export default function AnalyzeSymbol() {
   const [vpBars, setVpBars] = useState<number>(200);
   const [selectedSetup, setSelectedSetup] = useState<HvnFvgPullback | null>(null);
   const [loggedSetups, setLoggedSetups] = useState<Set<string>>(new Set());
+  const [tbSetup, setTbSetup] = useState<TrendBreakSetup | null>(null);
+  const [tbSelected, setTbSelected] = useState(false);
+  const [tbLogged, setTbLogged] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
   const [news, setNews] = useState<NewsHeadline[]>([]);
@@ -109,9 +113,54 @@ export default function AnalyzeSymbol() {
     setDrawMode(false);
   }, [symbol]);
 
+  useEffect(() => {
+    setTbSetup(null);
+    setTbSelected(false);
+    setTbLogged(false);
+    fetch(apiUrl(`/api/setups/trendbreak?symbol=${symbol}`))
+      .then((r) => r.json())
+      .then((d) => setTbSetup(d.setup ?? null))
+      .catch(() => {});
+  }, [symbol]);
+
   const onPriceClick = useCallback(
     (price: number) => setDrawings(addDrawing(symbol, price)),
     [symbol],
+  );
+
+  const logTbToJournal = useCallback(
+    (s: TrendBreakSetup) => {
+      if (s.entry === null || s.stopLoss === null || s.takeProfit === null) return;
+      const trade: JournalTrade = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        symbol,
+        timeframe: "1m",
+        direction: s.direction === "bullish" ? "long" : "short",
+        status: "open",
+        entryPrice: s.entry,
+        entryTime: Date.now(),
+        size: null,
+        stopLoss: s.stopLoss,
+        takeProfit: s.takeProfit,
+        strategyName: TREND_BREAK_STRATEGY_NAME,
+        notes: `Logged from analysis card · ${s.bosCount} BoS ${s.priorTrend} 15m run · trendline break + CHoCH · 1m FVG midpoint entry ${fmtPrice(s.entry)}`,
+        snapshot: analysis
+          ? {
+              trendDirection: analysis.trend.direction,
+              htfDirection: analysis.higherTimeframeTrend?.direction,
+              rsi14: analysis.trend.rsi14,
+              confluenceScore: null,
+              factors: [],
+            }
+          : null,
+        exitPrice: null,
+        exitTime: null,
+        exitNotes: "",
+      };
+      saveTrades([trade, ...loadTrades()]);
+      setTbLogged(true);
+    },
+    [symbol, analysis],
   );
 
   const logSetupToJournal = useCallback(
@@ -241,6 +290,23 @@ export default function AnalyzeSymbol() {
   }, [analysis, layers.volumeProfile]);
 
   const setupOverlay = useMemo<SetupOverlay | null>(() => {
+    if (tbSelected && tbSetup && tbSetup.fvg && tbSetup.entry !== null && tbSetup.stopLoss !== null && tbSetup.takeProfit !== null) {
+      return {
+        direction: tbSetup.direction,
+        impulseFromTime: tbSetup.trendline.fromTime,
+        impulseFromPrice: tbSetup.trendline.fromPrice,
+        impulseToTime: tbSetup.breakTime,
+        impulseToPrice: tbSetup.breakPrice,
+        zoneTop: tbSetup.fvg.top,
+        zoneBottom: tbSetup.fvg.bottom,
+        zoneFrom: tbSetup.fvg.time,
+        target: tbSetup.takeProfit,
+        stopLoss: tbSetup.stopLoss,
+        entry: tbSetup.entry,
+        lineLabel: "15m trendline",
+        zoneLabel: "1m FVG · entry at midpoint",
+      };
+    }
     if (!selectedSetup) return null;
     return {
       direction: selectedSetup.direction,
@@ -254,7 +320,7 @@ export default function AnalyzeSymbol() {
       target: selectedSetup.target,
       stopLoss: selectedSetup.stopLoss,
     };
-  }, [selectedSetup]);
+  }, [selectedSetup, tbSelected, tbSetup]);
 
   const zones = useMemo<ZoneBox[]>(() => {
     if (!analysis) return [];
@@ -503,7 +569,10 @@ export default function AnalyzeSymbol() {
                   .map((s) => (
                     <div
                       key={`${s.direction}-${s.impulseEndTime}`}
-                      onClick={() => setSelectedSetup((cur) => (cur === s ? null : s))}
+                      onClick={() => {
+                        setTbSelected(false);
+                        setSelectedSetup((cur) => (cur === s ? null : s));
+                      }}
                       className={`cursor-pointer rounded-md border p-2 ${
                         selectedSetup === s ? "border-accent ring-1 ring-accent" : "border-edge hover:border-accent/50"
                       }`}
@@ -547,6 +616,77 @@ export default function AnalyzeSymbol() {
                       </div>
                     </div>
                   ))}
+              </div>
+            </section>
+          )}
+
+          {/* 15m trend break → 1m FVG setup */}
+          {tbSetup && (
+            <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
+              <h2 className="mb-2 font-semibold">{TREND_BREAK_STRATEGY_NAME}</h2>
+              <div
+                onClick={() => {
+                  if (tbSetup.state === "invalidated" || !tbSetup.fvg) return;
+                  setSelectedSetup(null);
+                  setTbSelected((v) => !v);
+                  if (tf !== "15m" && tf !== "1m") setTf("15m");
+                }}
+                className={`rounded-md border p-2 ${
+                  tbSetup.state === "invalidated" || !tbSetup.fvg
+                    ? "border-edge opacity-80"
+                    : `cursor-pointer ${tbSelected ? "border-accent ring-1 ring-accent" : "border-edge hover:border-accent/50"}`
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className={`font-semibold ${tbSetup.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                    {tbSetup.direction === "bullish" ? "BUY setup" : "SELL setup"}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                      tbSetup.state === "triggered"
+                        ? "bg-bull/15 text-bull"
+                        : tbSetup.state === "invalidated"
+                          ? "bg-bear/15 text-bear"
+                          : "bg-edge text-muted"
+                    }`}
+                  >
+                    {tbSetup.state.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  15m: {tbSetup.bosCount} BoS {tbSetup.priorTrend} run · trendline broken at {fmtPrice(tbSetup.breakPrice)} · CHoCH
+                  confirmed · {tbSetup.stateDetail}
+                </p>
+                {tbSetup.entry !== null && tbSetup.stopLoss !== null && tbSetup.takeProfit !== null && (
+                  <p className="mt-1 text-xs text-muted">
+                    Entry (FVG midpoint) {fmtPrice(tbSetup.entry)} · SL {fmtPrice(tbSetup.stopLoss)} · TP (3R){" "}
+                    {fmtPrice(tbSetup.takeProfit)}
+                  </p>
+                )}
+                {tbSetup.state !== "invalidated" && tbSetup.fvg && (
+                  <p className="mt-1 text-[10px] text-accent">
+                    {tbSelected ? "Shown on chart — click to hide" : "Click to show on chart (switches to 15m)"}
+                  </p>
+                )}
+                {tbSetup.state !== "invalidated" && tbSetup.entry !== null && (
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        logTbToJournal(tbSetup);
+                      }}
+                      disabled={tbLogged}
+                      className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    >
+                      {tbLogged ? "Logged to Journal" : "Log to Journal"}
+                    </button>
+                    {tbLogged && (
+                      <Link href="/journal" onClick={(e) => e.stopPropagation()} className="text-[11px] text-accent hover:underline">
+                        View in Journal
+                      </Link>
+                    )}
+                  </div>
+                )}
               </div>
             </section>
           )}

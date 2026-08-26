@@ -47,6 +47,9 @@ export interface SetupOverlay {
   zoneFrom: number;
   target: number;
   stopLoss: number;
+  entry?: number;
+  lineLabel?: string;
+  zoneLabel?: string;
 }
 
 export default function PriceChart({
@@ -164,7 +167,7 @@ export default function PriceChart({
         ctx.setLineDash([]);
         ctx.fillStyle = accent;
         ctx.font = "bold 10px sans-serif";
-        ctx.fillText("HVN ∩ FVG entry zone", Math.max(zx + 4, 4), Math.min(zTop - 4, h - 4));
+        ctx.fillText(s.zoneLabel ?? "HVN ∩ FVG entry zone", Math.max(zx + 4, 4), Math.min(zTop - 4, h - 4));
       }
 
       if (x1 != null && y1s != null && x2 != null && y2s != null) {
@@ -185,7 +188,24 @@ export default function PriceChart({
         ctx.fill();
         ctx.lineWidth = 1;
         ctx.font = "bold 10px sans-serif";
-        ctx.fillText("Impulse", (x1 + x2) / 2 + 6, (y1s + y2s) / 2);
+        ctx.fillText(s.lineLabel ?? "Impulse", (x1 + x2) / 2 + 6, (y1s + y2s) / 2);
+      }
+
+      if (s.entry !== undefined) {
+        const yE = series.priceToCoordinate(s.entry);
+        if (yE != null) {
+          const tx = x2 ?? 0;
+          ctx.strokeStyle = "#4f8cff";
+          ctx.setLineDash([6, 4]);
+          ctx.beginPath();
+          ctx.moveTo(tx, yE);
+          ctx.lineTo(paneWidth, yE);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "#4f8cff";
+          ctx.font = "bold 10px sans-serif";
+          ctx.fillText("Setup entry", Math.max(tx + 4, 4), yE - 4);
+        }
       }
 
       const yT = series.priceToCoordinate(s.target);
