@@ -9,7 +9,9 @@ import type { BacktestResult, SweepPoint, WalkForwardResult } from "@/lib/backte
 import { REGIME_LABELS } from "@/lib/strategies/regime";
 import { runMonteCarlo } from "@/lib/backtest/montecarlo";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
-import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy } from "@/lib/strategies/custom";
+import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy, type WeightedUserCondition } from "@/lib/strategies/custom";
+import type { RiskSettings } from "@/lib/strategies/risk";
+import { describeStopRule, describeTargetRule } from "@/lib/strategies/risk";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 
 interface ConditionState {
@@ -94,6 +96,8 @@ export default function BacktestPage() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
 
+  const [loadedExtras, setLoadedExtras] = useState<{ name: string; userConditions?: WeightedUserCondition[]; risk?: RiskSettings } | null>(null);
+
   useEffect(() => {
     setSavedRuns(loadRuns());
     setSavedStrategies(loadSavedStrategies());
@@ -101,14 +105,16 @@ export default function BacktestPage() {
 
   const custom = useMemo<CustomStrategy>(
     () => ({
-      name: "Backtested strategy",
+      name: loadedExtras?.name ?? "Backtested strategy",
       minScore: customMinScore,
       conditions: CONDITION_LIBRARY.filter((c) => conditions[c.id].enabled).map((c) => ({ id: c.id, weight: conditions[c.id].weight })),
+      ...(loadedExtras?.userConditions && loadedExtras.userConditions.length > 0 ? { userConditions: loadedExtras.userConditions } : {}),
+      ...(loadedExtras?.risk ? { risk: loadedExtras.risk } : {}),
     }),
-    [conditions, customMinScore],
+    [conditions, customMinScore, loadedExtras],
   );
 
-  const canRun = strategyType === "builtin" || custom.conditions.length > 0;
+  const canRun = strategyType === "builtin" || custom.conditions.length > 0 || (custom.userConditions?.length ?? 0) > 0;
 
   const run = useCallback(
     (mode: "run" | "sweep" | "walkforward") => {
@@ -170,7 +176,10 @@ export default function BacktestPage() {
           slippagePct,
           conditions:
             strategyType === "custom"
-              ? custom.conditions.map((c) => ({ label: CONDITION_LIBRARY.find((x) => x.id === c.id)?.label ?? c.id, weight: c.weight }))
+              ? [
+                  ...custom.conditions.map((c) => ({ label: CONDITION_LIBRARY.find((x) => x.id === c.id)?.label ?? c.id, weight: c.weight })),
+                  ...(custom.userConditions ?? []).map((u) => ({ label: `${u.condition.label} (user-defined)`, weight: u.weight })),
+                ]
               : null,
         },
         metrics: {
@@ -380,6 +389,11 @@ export default function BacktestPage() {
                         ) as Record<ConditionId, ConditionState>,
                       );
                       setCustomMinScore(s.strategy.minScore);
+                      setLoadedExtras(
+                        (s.strategy.userConditions?.length ?? 0) > 0 || s.strategy.risk
+                          ? { name: s.strategy.name, userConditions: s.strategy.userConditions, risk: s.strategy.risk }
+                          : null,
+                      );
                     }}
                     className={`${inputCls} w-full min-w-0 max-w-full truncate`}
                   >
@@ -390,6 +404,20 @@ export default function BacktestPage() {
                       </option>
                     ))}
                   </select>
+                )}
+                {loadedExtras && (
+                  <div className="flex items-start justify-between gap-2 rounded-md border border-accent/40 bg-accent/5 px-2 py-1.5 text-[11px] text-muted">
+                    <span className="min-w-0">
+                      Carried from “{loadedExtras.name}”:
+                      {(loadedExtras.userConditions?.length ?? 0) > 0 &&
+                        ` ${loadedExtras.userConditions?.length} user condition${(loadedExtras.userConditions?.length ?? 0) === 1 ? "" : "s"}`}
+                      {loadedExtras.risk &&
+                        ` · SL: ${describeStopRule(loadedExtras.risk.stop)} · TP: ${describeTargetRule(loadedExtras.risk.target)}`}
+                    </span>
+                    <button onClick={() => setLoadedExtras(null)} className="shrink-0 text-muted hover:text-bear">
+                      ✕
+                    </button>
+                  </div>
                 )}
                 <div className="max-h-64 space-y-1 overflow-auto pr-1">
                   {CONDITION_LIBRARY.map((c) => {

@@ -1,5 +1,7 @@
 import { buildTradeLevels } from "./confluence";
+import { buildRiskTradeLevels, type RiskSettings } from "./risk";
 import type { ConfluenceFactor, Opportunity, StrategyAnalysis } from "./types";
+import { evaluateUserCondition, type UserCondition } from "./userConditions";
 
 /**
  * Custom strategy builder: users pick conditions from the deterministic
@@ -30,10 +32,19 @@ export interface CustomCondition {
   weight: number; // relative importance, > 0
 }
 
+export interface WeightedUserCondition {
+  condition: UserCondition;
+  weight: number;
+}
+
 export interface CustomStrategy {
   name: string;
   conditions: CustomCondition[];
   minScore: number; // 0..100, minimum % of weighted conditions met
+  /** user-built conditions (definitions embedded so strategies are self-contained) */
+  userConditions?: WeightedUserCondition[];
+  /** SL/TP placement rules; omitted = structure defaults */
+  risk?: RiskSettings;
 }
 
 export interface ConditionMeta {
@@ -169,7 +180,10 @@ export interface CustomEvaluation {
 /** Evaluates a custom strategy against an analysis for both directions. */
 export function evaluateCustomStrategy(a: StrategyAnalysis, strategy: CustomStrategy): CustomEvaluation[] {
   const results: CustomEvaluation[] = [];
-  const totalWeight = strategy.conditions.reduce((s, c) => s + Math.max(0, c.weight), 0);
+  const userConds = strategy.userConditions ?? [];
+  const totalWeight =
+    strategy.conditions.reduce((s, c) => s + Math.max(0, c.weight), 0) +
+    userConds.reduce((s, c) => s + Math.max(0, c.weight), 0);
   for (const direction of ["long", "short"] as const) {
     const factors: (ConfluenceFactor & { met: boolean })[] = [];
     let metWeight = 0;
@@ -180,6 +194,11 @@ export function evaluateCustomStrategy(a: StrategyAnalysis, strategy: CustomStra
       if (met) metWeight += Math.max(0, cond.weight);
       factors.push({ name: meta.label, detail, weight: met ? cond.weight : 0, met });
     }
+    for (const uc of userConds) {
+      const { met, detail } = evaluateUserCondition(uc.condition, a, direction);
+      if (met) metWeight += Math.max(0, uc.weight);
+      factors.push({ name: uc.condition.label, detail, weight: met ? uc.weight : 0, met });
+    }
     const score = totalWeight > 0 ? Math.round((100 * metWeight) / totalWeight) : 0;
     const qualifies = score >= strategy.minScore && factors.some((f) => f.met);
     const opportunity: Opportunity | null = qualifies
@@ -189,7 +208,7 @@ export function evaluateCustomStrategy(a: StrategyAnalysis, strategy: CustomStra
           direction,
           score,
           factors: factors.filter((f) => f.met),
-          ...buildTradeLevels(a, direction),
+          ...(strategy.risk ? buildRiskTradeLevels(a, direction, strategy.risk) : buildTradeLevels(a, direction)),
           generatedAt: Date.now(),
           regime: a.regime.regime,
         }

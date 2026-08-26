@@ -7,7 +7,18 @@ import { apiUrl } from "@/components/api";
 import { fmtPrice } from "@/components/format";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomEvaluation, type CustomStrategy } from "@/lib/strategies/custom";
+import type { RiskSettings, StopRule, TargetRule } from "@/lib/strategies/risk";
 import { addSavedStrategy, deleteSavedStrategy, loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
+import {
+  METRIC_LIBRARY,
+  describeUserCondition,
+  loadUserConditions,
+  newUserConditionId,
+  saveUserConditions,
+  type MetricId,
+  type UserClause,
+  type UserCondition,
+} from "@/lib/strategies/userConditions";
 
 interface ConditionState {
   enabled: boolean;
@@ -34,19 +45,36 @@ export default function StrategyLab() {
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState<SavedStrategy[]>([]);
   const [justSaved, setJustSaved] = useState(false);
+  const [userConds, setUserConds] = useState<UserCondition[]>([]);
+  const [userStates, setUserStates] = useState<Record<string, ConditionState>>({});
+  const [editId, setEditId] = useState<string | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editLabel, setEditLabel] = useState("");
+  const [editShortMode, setEditShortMode] = useState<"mirror" | "same">("mirror");
+  const [editClauses, setEditClauses] = useState<UserClause[]>([{ metric: "rsi14", op: "lt", value: 35 }]);
+  const [stopRule, setStopRule] = useState<StopRule>({ type: "default" });
+  const [targetRule, setTargetRule] = useState<TargetRule>({ type: "default" });
 
   useEffect(() => {
     setSaved(loadSavedStrategies());
+    const conds = loadUserConditions();
+    setUserConds(conds);
+    setUserStates(Object.fromEntries(conds.map((c) => [c.id, { enabled: false, weight: 10 }])));
   }, []);
 
-  const strategy = useMemo<CustomStrategy>(
-    () => ({
+  const strategy = useMemo<CustomStrategy>(() => {
+    const enabledUser = userConds
+      .filter((c) => userStates[c.id]?.enabled)
+      .map((c) => ({ condition: c, weight: userStates[c.id].weight }));
+    const riskCustom = stopRule.type !== "default" || targetRule.type !== "default";
+    return {
       name,
       minScore,
       conditions: CONDITION_LIBRARY.filter((c) => conditions[c.id].enabled).map((c) => ({ id: c.id, weight: conditions[c.id].weight })),
-    }),
-    [name, minScore, conditions],
-  );
+      ...(enabledUser.length > 0 ? { userConditions: enabledUser } : {}),
+      ...(riskCustom ? { risk: { stop: stopRule, target: targetRule } satisfies RiskSettings } : {}),
+    };
+  }, [name, minScore, conditions, userConds, userStates, stopRule, targetRule]);
 
   const runEval = useCallback(() => {
     setEvalLoading(true);
@@ -73,7 +101,7 @@ export default function StrategyLab() {
     fetch(apiUrl("/api/strategy/compose"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description }),
+      body: JSON.stringify({ description, ...(userConds.length > 0 ? { userConditions: userConds } : {}) }),
     })
       .then(async (r) => {
         const d = await r.json();
@@ -89,10 +117,18 @@ export default function StrategyLab() {
             }),
           ) as Record<ConditionId, ConditionState>,
         );
+        setUserStates((prev) =>
+          Object.fromEntries(
+            Object.keys(prev).map((id) => {
+              const picked = s.userConditions?.find((u) => u.condition.id === id);
+              return [id, { enabled: Boolean(picked), weight: picked?.weight ?? prev[id].weight }];
+            }),
+          ),
+        );
       })
       .catch((e) => setComposeError(e.message))
       .finally(() => setComposeLoading(false));
-  }, [description]);
+  }, [description, userConds]);
 
   const runPine = useCallback(() => {
     setPineError(null);
@@ -110,7 +146,7 @@ export default function StrategyLab() {
       .catch((e) => setPineError(e.message));
   }, [strategy]);
 
-  const enabledCount = strategy.conditions.length;
+  const enabledCount = strategy.conditions.length + (strategy.userConditions?.length ?? 0);
 
   const saveStrategy = useCallback(() => {
     setSaved(addSavedStrategy(strategy, "manual"));
@@ -118,18 +154,69 @@ export default function StrategyLab() {
     setTimeout(() => setJustSaved(false), 2000);
   }, [strategy]);
 
-  const loadStrategy = useCallback((s: CustomStrategy) => {
-    setName(s.name);
-    setMinScore(s.minScore);
-    setConditions(
-      Object.fromEntries(
-        CONDITION_LIBRARY.map((c) => {
-          const picked = s.conditions.find((x) => x.id === c.id);
-          return [c.id, { enabled: Boolean(picked), weight: picked?.weight ?? c.defaultWeight }];
-        }),
-      ) as Record<ConditionId, ConditionState>,
-    );
+  const loadStrategy = useCallback(
+    (s: CustomStrategy) => {
+      setName(s.name);
+      setMinScore(s.minScore);
+      setConditions(
+        Object.fromEntries(
+          CONDITION_LIBRARY.map((c) => {
+            const picked = s.conditions.find((x) => x.id === c.id);
+            return [c.id, { enabled: Boolean(picked), weight: picked?.weight ?? c.defaultWeight }];
+          }),
+        ) as Record<ConditionId, ConditionState>,
+      );
+      // Import any embedded user conditions missing from the local library.
+      const embedded = s.userConditions ?? [];
+      const missing = embedded.map((u) => u.condition).filter((c) => !userConds.some((x) => x.id === c.id));
+      const nextConds = missing.length > 0 ? [...userConds, ...missing] : userConds;
+      if (missing.length > 0) {
+        setUserConds(nextConds);
+        saveUserConditions(nextConds);
+      }
+      setUserStates(
+        Object.fromEntries(
+          nextConds.map((c) => {
+            const picked = embedded.find((u) => u.condition.id === c.id);
+            return [c.id, { enabled: Boolean(picked), weight: picked?.weight ?? 10 }];
+          }),
+        ),
+      );
+      setStopRule(s.risk?.stop ?? { type: "default" });
+      setTargetRule(s.risk?.target ?? { type: "default" });
+    },
+    [userConds],
+  );
+
+  const openEditor = useCallback((cond: UserCondition | null) => {
+    setEditId(cond?.id ?? null);
+    setEditLabel(cond?.label ?? "");
+    setEditShortMode(cond?.shortMode ?? "mirror");
+    setEditClauses(cond ? cond.clauses.map((c) => ({ ...c })) : [{ metric: "rsi14", op: "lt", value: 35 }]);
+    setEditorOpen(true);
   }, []);
+
+  const saveCondition = useCallback(() => {
+    const label = editLabel.trim();
+    if (!label || editClauses.length === 0) return;
+    const cond: UserCondition = { id: editId ?? newUserConditionId(), label, shortMode: editShortMode, clauses: editClauses };
+    const next = editId ? userConds.map((c) => (c.id === editId ? cond : c)) : [...userConds, cond];
+    setUserConds(next);
+    saveUserConditions(next);
+    setUserStates((prev) => ({ ...prev, [cond.id]: prev[cond.id] ?? { enabled: true, weight: 10 } }));
+    setEditorOpen(false);
+  }, [editId, editLabel, editShortMode, editClauses, userConds]);
+
+  const deleteCondition = useCallback(
+    (id: string) => {
+      const next = userConds.filter((c) => c.id !== id);
+      setUserConds(next);
+      saveUserConditions(next);
+      setUserStates((prev) => Object.fromEntries(Object.entries(prev).filter(([k]) => k !== id)));
+      if (editId === id) setEditorOpen(false);
+    },
+    [userConds, editId],
+  );
 
   return (
     <div className="space-y-4">
@@ -148,7 +235,7 @@ export default function StrategyLab() {
             <h2 className="font-semibold">Describe it — AI composes it</h2>
             <p className="mt-1 text-xs text-muted">
               e.g. &quot;Buy liquidity sweeps of the lows when the higher timeframe is trending up and RSI is oversold&quot;.
-              Claude maps your description onto the supported conditions below — it never invents calculations.
+              Claude maps your description onto the supported conditions below (including your own) — it never invents calculations.
             </p>
             <textarea
               value={description}
@@ -227,7 +314,304 @@ export default function StrategyLab() {
                   </div>
                 );
               })}
+              {userConds.map((c) => {
+                const st = userStates[c.id] ?? { enabled: false, weight: 10 };
+                return (
+                  <div key={c.id} className={`rounded-md border p-3 ${st.enabled ? "border-accent/60 bg-background" : "border-edge"}`}>
+                    <label className="flex cursor-pointer items-start gap-2">
+                      <input
+                        type="checkbox"
+                        checked={st.enabled}
+                        onChange={(e) => setUserStates((prev) => ({ ...prev, [c.id]: { ...st, enabled: e.target.checked } }))}
+                        className="mt-0.5 accent-[var(--accent)]"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="text-sm font-medium">{c.label}</span>
+                        <span className="ml-2 text-[10px] uppercase text-accent">yours</span>
+                        <span className="ml-1 text-[10px] uppercase text-muted">web only</span>
+                        <span className="block text-xs text-muted">{describeUserCondition(c)}</span>
+                      </span>
+                      <span className="flex shrink-0 gap-1">
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            openEditor(c);
+                          }}
+                          className="rounded border border-edge px-1.5 py-0.5 text-[10px] font-semibold hover:bg-edge"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.preventDefault();
+                            deleteCondition(c.id);
+                          }}
+                          className="px-1 text-muted hover:text-bear"
+                        >
+                          ✕
+                        </button>
+                      </span>
+                    </label>
+                    {st.enabled && (
+                      <div className="mt-2 flex items-center gap-2 pl-6">
+                        <input
+                          type="range"
+                          min={1}
+                          max={30}
+                          value={st.weight}
+                          onChange={(e) => setUserStates((prev) => ({ ...prev, [c.id]: { ...st, weight: Number(e.target.value) } }))}
+                          className="w-40 accent-[var(--accent)]"
+                        />
+                        <span className="w-14 text-xs text-muted">weight {st.weight}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
+
+            {/* User condition editor */}
+            <div className="mt-3 rounded-md border border-edge bg-background p-3">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-semibold">Your conditions</span>
+                <button
+                  onClick={() => openEditor(null)}
+                  className="rounded-md border border-edge px-3 py-1 text-xs font-semibold hover:bg-edge"
+                >
+                  + New condition
+                </button>
+              </div>
+              <p className="mt-1 text-xs text-muted">
+                Build your own rules from deterministic metrics (RSI, EMA/VWAP/POC distance, volatility, swings…). Rules are written
+                for the long side — shorts use the mirrored rule unless you choose otherwise. They join the list above and work in
+                live evaluation, scanning and backtests (web only — excluded from Pine export).
+              </p>
+              {editorOpen && (
+                <div className="mt-3 space-y-2 rounded-md border border-accent/40 p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      value={editLabel}
+                      onChange={(e) => setEditLabel(e.target.value)}
+                      placeholder="Condition name…"
+                      className="w-56 rounded-md border border-edge bg-background px-2 py-1 text-sm outline-none focus:border-accent"
+                    />
+                    <select
+                      value={editShortMode}
+                      onChange={(e) => setEditShortMode(e.target.value as "mirror" | "same")}
+                      className="rounded-md border border-edge bg-background px-2 py-1 text-xs outline-none"
+                    >
+                      <option value="mirror">Mirror rule for shorts</option>
+                      <option value="same">Same rule both directions</option>
+                    </select>
+                  </div>
+                  {editClauses.map((cl, i) => {
+                    const meta = METRIC_LIBRARY.find((m) => m.id === cl.metric);
+                    return (
+                      <div key={i} className="flex flex-wrap items-center gap-2">
+                        {i > 0 && <span className="text-[10px] font-semibold uppercase text-muted">and</span>}
+                        <select
+                          value={cl.metric}
+                          onChange={(e) =>
+                            setEditClauses((prev) => prev.map((x, j) => (j === i ? { ...x, metric: e.target.value as MetricId } : x)))
+                          }
+                          className="max-w-56 truncate rounded-md border border-edge bg-background px-2 py-1 text-xs outline-none"
+                        >
+                          {METRIC_LIBRARY.map((m) => (
+                            <option key={m.id} value={m.id} title={m.description}>
+                              {m.label}
+                            </option>
+                          ))}
+                        </select>
+                        <select
+                          value={cl.op}
+                          onChange={(e) =>
+                            setEditClauses((prev) => prev.map((x, j) => (j === i ? { ...x, op: e.target.value as UserClause["op"] } : x)))
+                          }
+                          className="rounded-md border border-edge bg-background px-2 py-1 text-xs outline-none"
+                        >
+                          <option value="lt">&lt; below</option>
+                          <option value="gt">&gt; above</option>
+                        </select>
+                        <input
+                          type="number"
+                          step="any"
+                          value={cl.value}
+                          onChange={(e) =>
+                            setEditClauses((prev) => prev.map((x, j) => (j === i ? { ...x, value: Number(e.target.value) } : x)))
+                          }
+                          className="w-24 rounded-md border border-edge bg-background px-2 py-1 text-xs outline-none focus:border-accent"
+                        />
+                        {meta?.unit && <span className="text-xs text-muted">{meta.unit}</span>}
+                        {editClauses.length > 1 && (
+                          <button
+                            onClick={() => setEditClauses((prev) => prev.filter((_, j) => j !== i))}
+                            className="text-muted hover:text-bear"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {(() => {
+                    const lastMeta = METRIC_LIBRARY.find((m) => m.id === editClauses[editClauses.length - 1]?.metric);
+                    return lastMeta ? <p className="text-[11px] text-muted">{lastMeta.label}: {lastMeta.description}</p> : null;
+                  })()}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setEditClauses((prev) => (prev.length < 6 ? [...prev, { metric: "price_vs_ema20", op: "gt", value: 0 }] : prev))}
+                      className="rounded-md border border-edge px-2 py-1 text-xs font-semibold hover:bg-edge"
+                    >
+                      + AND clause
+                    </button>
+                    <button
+                      onClick={saveCondition}
+                      disabled={editLabel.trim().length === 0}
+                      className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    >
+                      {editId ? "Update condition" : "Add condition"}
+                    </button>
+                    <button onClick={() => setEditorOpen(false)} className="text-xs text-muted hover:text-foreground">
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+            {/* Risk settings */}
+            <div className="mt-3 rounded-md border border-edge bg-background p-3">
+              <span className="text-sm font-semibold">Risk settings — SL &amp; TP placement</span>
+              <p className="mt-1 text-xs text-muted">
+                How this strategy places its stop-loss and target on every signal (live evaluation, scanner and backtests).
+              </p>
+              <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                <div>
+                  <label className="text-xs text-muted">Stop-loss</label>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <select
+                      value={stopRule.type}
+                      onChange={(e) => {
+                        const t = e.target.value as StopRule["type"];
+                        setStopRule(
+                          t === "default"
+                            ? { type: "default" }
+                            : t === "atr"
+                              ? { type: "atr", multiple: 1.5 }
+                              : t === "percent"
+                                ? { type: "percent", percent: 1 }
+                                : t === "swing"
+                                  ? { type: "swing", bufferAtr: 0.25 }
+                                  : { type: "hvn", bufferAtr: 0.25 },
+                        );
+                      }}
+                      className="rounded-md border border-edge bg-background px-2 py-1 text-xs outline-none"
+                    >
+                      <option value="default">Structure default (beyond swing)</option>
+                      <option value="swing">Beyond recent swing low/high + buffer</option>
+                      <option value="hvn">Beyond nearest HVN + buffer</option>
+                      <option value="atr">Fixed ATR multiple</option>
+                      <option value="percent">Fixed % from entry</option>
+                    </select>
+                    {stopRule.type === "atr" && (
+                      <span className="flex items-center gap-1 text-xs">
+                        <input
+                          type="number"
+                          step="0.1"
+                          min={0.1}
+                          value={stopRule.multiple}
+                          onChange={(e) => setStopRule({ type: "atr", multiple: Number(e.target.value) })}
+                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
+                        />
+                        × ATR
+                      </span>
+                    )}
+                    {stopRule.type === "percent" && (
+                      <span className="flex items-center gap-1 text-xs">
+                        <input
+                          type="number"
+                          step="0.1"
+                          min={0.05}
+                          value={stopRule.percent}
+                          onChange={(e) => setStopRule({ type: "percent", percent: Number(e.target.value) })}
+                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
+                        />
+                        %
+                      </span>
+                    )}
+                    {(stopRule.type === "swing" || stopRule.type === "hvn") && (
+                      <span className="flex items-center gap-1 text-xs">
+                        buffer
+                        <input
+                          type="number"
+                          step="0.05"
+                          min={0}
+                          value={stopRule.bufferAtr}
+                          onChange={(e) => setStopRule({ type: stopRule.type, bufferAtr: Number(e.target.value) })}
+                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
+                        />
+                        ATR
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-muted">Take-profit</label>
+                  <div className="mt-1 flex flex-wrap items-center gap-2">
+                    <select
+                      value={targetRule.type}
+                      onChange={(e) => {
+                        const t = e.target.value as TargetRule["type"];
+                        setTargetRule(
+                          t === "default"
+                            ? { type: "default" }
+                            : t === "rr"
+                              ? { type: "rr", ratio: 2 }
+                              : t === "atr"
+                                ? { type: "atr", multiple: 3 }
+                                : t === "swing"
+                                  ? { type: "swing" }
+                                  : { type: "hvn" },
+                        );
+                      }}
+                      className="rounded-md border border-edge bg-background px-2 py-1 text-xs outline-none"
+                    >
+                      <option value="default">Structure default (opposing structure / 2R)</option>
+                      <option value="rr">Fixed R multiple of the stop</option>
+                      <option value="hvn">Next HVN in trade direction</option>
+                      <option value="swing">Next swing high/low</option>
+                      <option value="atr">Fixed ATR multiple</option>
+                    </select>
+                    {targetRule.type === "rr" && (
+                      <span className="flex items-center gap-1 text-xs">
+                        <input
+                          type="number"
+                          step="0.1"
+                          min={0.2}
+                          value={targetRule.ratio}
+                          onChange={(e) => setTargetRule({ type: "rr", ratio: Number(e.target.value) })}
+                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
+                        />
+                        R
+                      </span>
+                    )}
+                    {targetRule.type === "atr" && (
+                      <span className="flex items-center gap-1 text-xs">
+                        <input
+                          type="number"
+                          step="0.1"
+                          min={0.1}
+                          value={targetRule.multiple}
+                          onChange={(e) => setTargetRule({ type: "atr", multiple: Number(e.target.value) })}
+                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
+                        />
+                        × ATR
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="mt-3 flex items-center gap-3 text-sm">
               <label className="text-xs text-muted">Min score to signal</label>
               <input
@@ -296,7 +680,9 @@ export default function StrategyLab() {
                         <span className="ml-2 rounded bg-accent/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-accent">calibrated</span>
                       )}
                       <span className="ml-2 text-xs text-muted">
-                        {s.strategy.conditions.length} condition{s.strategy.conditions.length === 1 ? "" : "s"} · min score {s.strategy.minScore}
+                        {s.strategy.conditions.length + (s.strategy.userConditions?.length ?? 0)} condition
+                        {s.strategy.conditions.length + (s.strategy.userConditions?.length ?? 0) === 1 ? "" : "s"} · min score {s.strategy.minScore}
+                        {s.strategy.risk && (s.strategy.risk.stop.type !== "default" || s.strategy.risk.target.type !== "default") ? " · custom risk" : ""}
                       </span>
                     </span>
                     <span className="flex items-center gap-2">

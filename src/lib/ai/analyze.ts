@@ -3,6 +3,7 @@ import type { EconomicEvent } from "@/lib/calendar/types";
 import type { NewsHeadline } from "@/lib/news/provider";
 import { CONDITION_LIBRARY, isConditionId, type CustomStrategy } from "@/lib/strategies/custom";
 import type { Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
+import { describeUserCondition, type UserCondition } from "@/lib/strategies/userConditions";
 
 const MODEL = "claude-sonnet-4-5";
 
@@ -127,10 +128,11 @@ export async function generateAnalysis(
  * onto the fixed deterministic condition library. Claude can only pick
  * condition IDs and weights — it never invents calculations.
  */
-export async function composeStrategy(description: string): Promise<CustomStrategy> {
+export async function composeStrategy(description: string, userConditions?: UserCondition[]): Promise<CustomStrategy> {
   if (!isAiConfigured()) throw new Error("ANTHROPIC_API_KEY not configured");
 
   const library = CONDITION_LIBRARY.map((c) => ({ id: c.id, label: c.label, description: c.description, defaultWeight: c.defaultWeight }));
+  const userLibrary = (userConditions ?? []).map((c) => ({ id: c.id, label: c.label, description: `User-defined rule: ${describeUserCondition(c)}`, defaultWeight: 10 }));
   const text = await callClaude(
     [
       "You compose trading strategies for a deterministic confluence engine.",
@@ -139,6 +141,7 @@ export async function composeStrategy(description: string): Promise<CustomStrate
       "Weights reflect relative importance (roughly 5-25 each, based on how central the concept is to the described strategy).",
       "minScore is the % of total weight that must be met to signal (typically 50-80; stricter descriptions => higher).",
       `Condition library: ${JSON.stringify(library)}`,
+      userLibrary.length > 0 ? `The user has also defined their own conditions, equally valid to pick: ${JSON.stringify(userLibrary)}` : "",
       'Respond ONLY with JSON: {"name": string, "conditions": [{"id": string, "weight": number}], "minScore": number}.',
     ].join(" "),
     description,
@@ -149,17 +152,25 @@ export async function composeStrategy(description: string): Promise<CustomStrate
     conditions?: { id?: string; weight?: number }[];
     minScore?: number;
   };
-  const conditions = (parsed.conditions ?? [])
-    .filter((c): c is { id: string; weight?: number } => typeof c.id === "string" && isConditionId(c.id))
+  const picked = (parsed.conditions ?? []).filter((c): c is { id: string; weight?: number } => typeof c.id === "string");
+  const conditions = picked
+    .filter((c) => isConditionId(c.id))
     .map((c) => ({
       id: c.id as CustomStrategy["conditions"][number]["id"],
       weight: Math.min(100, Math.max(1, Math.round(c.weight ?? CONDITION_LIBRARY.find((m) => m.id === c.id)?.defaultWeight ?? 10))),
     }));
-  if (conditions.length === 0) throw new Error("Could not map the description to any supported conditions");
+  const pickedUser = picked
+    .map((c) => {
+      const cond = (userConditions ?? []).find((u) => u.id === c.id);
+      return cond ? { condition: cond, weight: Math.min(100, Math.max(1, Math.round(c.weight ?? 10))) } : null;
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null);
+  if (conditions.length === 0 && pickedUser.length === 0) throw new Error("Could not map the description to any supported conditions");
   return {
     name: (parsed.name ?? "Custom strategy").slice(0, 60),
     conditions,
     minScore: Math.min(100, Math.max(0, Math.round(parsed.minScore ?? 60))),
+    ...(pickedUser.length > 0 ? { userConditions: pickedUser } : {}),
   };
 }
 
