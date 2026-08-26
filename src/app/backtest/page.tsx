@@ -2,11 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import SymbolInput from "@/components/SymbolInput";
-import { apiUrl } from "@/components/api";
+import { postJson } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
 import type { BacktestReview } from "@/lib/ai/analyze";
 import type { BacktestResult, SweepPoint, WalkForwardResult } from "@/lib/backtest/engine";
-import { REGIME_LABELS } from "@/lib/strategies/regime";
+import { REGIME_LABELS, type RegimeLabel } from "@/lib/strategies/regime";
 import { runMonteCarlo } from "@/lib/backtest/montecarlo";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy, type WeightedUserCondition } from "@/lib/strategies/custom";
@@ -69,6 +69,12 @@ export default function BacktestPage() {
   const [direction, setDirection] = useState<"both" | "long" | "short">("both");
   const [maxHoldBars, setMaxHoldBars] = useState(100);
   const [bars, setBars] = useState(1000);
+  const [regimeFilter, setRegimeFilter] = useState<Record<RegimeLabel, boolean>>({
+    trending_up: true,
+    trending_down: true,
+    ranging: true,
+    volatile: true,
+  });
   const [feePct, setFeePct] = useState(0);
   const [slippagePct, setSlippagePct] = useState(0);
   const [conditions, setConditions] = useState<Record<ConditionId, ConditionState>>(
@@ -116,6 +122,12 @@ export default function BacktestPage() {
 
   const canRun = strategyType === "builtin" || custom.conditions.length > 0 || (custom.userConditions?.length ?? 0) > 0;
 
+  // Entry-regime filter: undefined when all regimes are allowed (no filtering).
+  const activeRegimes = useMemo<RegimeLabel[] | undefined>(() => {
+    const picked = (Object.keys(REGIME_LABELS) as RegimeLabel[]).filter((r) => regimeFilter[r]);
+    return picked.length === 4 || picked.length === 0 ? undefined : picked;
+  }, [regimeFilter]);
+
   const run = useCallback(
     (mode: "run" | "sweep" | "walkforward") => {
       setLoading(true);
@@ -125,35 +137,30 @@ export default function BacktestPage() {
       setWalkforward(null);
       setAiReview(null);
       setAiReviewError(null);
-      fetch(apiUrl("/api/backtest"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          symbol: symbol.toUpperCase(),
-          tf,
-          strategyType,
-          custom: strategyType === "custom" ? custom : null,
-          minScore,
-          direction,
-          maxHoldBars,
-          bars,
-          feePct,
-          slippagePct,
-          sweep: mode === "sweep",
-          walkforward: mode === "walkforward",
-        }),
+      postJson<{ sweep?: SweepPoint[]; walkforward?: WalkForwardResult; result?: BacktestResult }>("/api/backtest", {
+        symbol: symbol.toUpperCase(),
+        tf,
+        strategyType,
+        custom: strategyType === "custom" ? custom : null,
+        minScore,
+        direction,
+        ...(activeRegimes ? { regimes: activeRegimes } : {}),
+        maxHoldBars,
+        bars,
+        feePct,
+        slippagePct,
+        sweep: mode === "sweep",
+        walkforward: mode === "walkforward",
       })
-        .then(async (r) => {
-          const d = await r.json();
-          if (!r.ok) throw new Error(d.error ?? "backtest failed");
-          if (mode === "sweep") setSweep(d.sweep);
-          else if (mode === "walkforward") setWalkforward(d.walkforward);
-          else setResult(d.result);
+        .then((d) => {
+          if (mode === "sweep") setSweep(d.sweep ?? null);
+          else if (mode === "walkforward") setWalkforward(d.walkforward ?? null);
+          else setResult(d.result ?? null);
         })
         .catch((e) => setError(e.message))
         .finally(() => setLoading(false));
     },
-    [symbol, tf, strategyType, custom, minScore, direction, maxHoldBars, bars, feePct, slippagePct],
+    [symbol, tf, strategyType, custom, minScore, direction, activeRegimes, maxHoldBars, bars, feePct, slippagePct],
   );
 
   const runAiReview = useCallback(() => {
@@ -161,16 +168,14 @@ export default function BacktestPage() {
     setAiReviewLoading(true);
     setAiReviewError(null);
     setAiReview(null);
-    fetch(apiUrl("/api/backtest/review"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
+    postJson<{ review: BacktestReview }>("/api/backtest/review", {
         symbol: result.symbol,
         timeframe: result.timeframe,
         config: {
           strategyType,
           minScore: strategyType === "custom" ? customMinScore : minScore,
           direction,
+          regimes: activeRegimes ?? null,
           maxHoldBars,
           feePct,
           slippagePct,
@@ -204,16 +209,11 @@ export default function BacktestPage() {
           score: t.score,
           regime: t.regime,
         })),
-      }),
-    })
-      .then(async (r) => {
-        const d = await r.json();
-        if (!r.ok) throw new Error(d.error ?? "AI review failed");
-        setAiReview(d.review);
       })
+      .then((d) => setAiReview(d.review))
       .catch((e) => setAiReviewError(e.message))
       .finally(() => setAiReviewLoading(false));
-  }, [result, strategyType, custom, customMinScore, minScore, direction, maxHoldBars, feePct, slippagePct]);
+  }, [result, strategyType, custom, customMinScore, minScore, direction, activeRegimes, maxHoldBars, feePct, slippagePct]);
 
   const monteCarlo = useMemo(
     () => (result && result.totalTrades >= 5 ? runMonteCarlo(result.trades.map((t) => t.rMultiple), riskPct) : null),
@@ -239,25 +239,23 @@ export default function BacktestPage() {
     Promise.all(
       strategies.flatMap((st) =>
         symbols.map((sym) =>
-          fetch(apiUrl("/api/backtest"), {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              symbol: sym,
-              tf,
-              strategyType: st.strategyType,
-              custom: st.custom,
-              minScore,
-              direction,
-              maxHoldBars,
-              bars: Math.min(bars, 1000),
-              feePct,
-              slippagePct,
-            }),
+          postJson<{ result: BacktestResult }>("/api/backtest", {
+            symbol: sym,
+            tf,
+            strategyType: st.strategyType,
+            custom: st.custom,
+            minScore,
+            direction,
+            ...(activeRegimes ? { regimes: activeRegimes } : {}),
+            maxHoldBars,
+            bars: Math.min(bars, 1000),
+            feePct,
+            slippagePct,
           })
-            .then(async (r) => {
-              const d = await r.json();
-              if (!r.ok) throw new Error(`${st.label} / ${sym}: ${d.error ?? "failed"}`);
+            .catch((e) => {
+              throw new Error(`${st.label} / ${sym}: ${e instanceof Error ? e.message : "failed"}`);
+            })
+            .then((d) => {
               const res: BacktestResult = d.result;
               return {
                 strategy: st.label,
@@ -276,7 +274,7 @@ export default function BacktestPage() {
       .then(setCompareRows)
       .catch((e) => setCompareError(e.message))
       .finally(() => setCompareLoading(false));
-  }, [compareSymbols, compareBuiltin, compareSaved, savedStrategies, tf, minScore, direction, maxHoldBars, bars, feePct, slippagePct]);
+  }, [compareSymbols, compareBuiltin, compareSaved, savedStrategies, tf, minScore, direction, activeRegimes, maxHoldBars, bars, feePct, slippagePct]);
 
   const saveRun = useCallback(() => {
     if (!result) return;
@@ -475,6 +473,28 @@ export default function BacktestPage() {
                   ))}
                 </select>
               </span>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs text-muted" title="Only enter trades when the market regime at the entry bar (classified from ADX/ATR) is one of the ticked regimes — e.g. untick Volatile to implement 'skip volatile regime entries'">
+                Entry regime filter
+              </label>
+              <div className="flex flex-wrap gap-x-3 gap-y-1">
+                {(Object.keys(REGIME_LABELS) as RegimeLabel[]).map((r) => (
+                  <label key={r} className="flex cursor-pointer items-center gap-1.5 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={regimeFilter[r]}
+                      onChange={(e) => setRegimeFilter((prev) => ({ ...prev, [r]: e.target.checked }))}
+                      className="accent-[var(--accent)]"
+                    />
+                    {REGIME_LABELS[r]}
+                  </label>
+                ))}
+              </div>
+              {activeRegimes && (
+                <p className="text-[10px] text-muted">Entries restricted to: {activeRegimes.map((r) => REGIME_LABELS[r]).join(", ")}</p>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
@@ -745,7 +765,7 @@ export default function BacktestPage() {
                       )}
                       <ReviewBlock label="Caveats" text={aiReview.caveats} />
                       <p className="text-[10px] text-muted">
-                        AI suggestions are hypotheses — re-run the backtest and walk-forward validation after any change. Educational analysis only, not financial advice.
+                        Apply suggestions with the Setup controls — min score, direction, max hold, the entry regime filter, condition weights — or edit SL/TP rules in the Strategy Lab, then re-run and validate with walk-forward. AI suggestions are hypotheses; educational analysis only, not financial advice.
                       </p>
                     </div>
                   ) : null}

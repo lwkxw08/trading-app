@@ -30,6 +30,7 @@ const schema = z.object({
     strategyType: z.enum(["builtin", "custom"]),
     minScore: z.number(),
     direction: z.enum(["both", "long", "short"]),
+    regimes: z.array(z.enum(["trending_up", "trending_down", "ranging", "volatile"])).max(4).nullable().optional(),
     maxHoldBars: z.number(),
     feePct: z.number(),
     slippagePct: z.number(),

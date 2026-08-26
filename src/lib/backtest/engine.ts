@@ -17,6 +17,8 @@ export interface BacktestConfig {
   custom: CustomStrategy | null;
   minScore: number; // signal threshold for the built-in confluence score
   direction: "both" | "long" | "short";
+  /** Only enter when the market regime at the entry bar is one of these (empty/undefined = all). */
+  regimes?: RegimeLabel[] | null;
   maxHoldBars: number;
   /** Taker fee per side as % of notional (e.g. 0.1 for Binance spot). */
   feePct: number;
@@ -105,6 +107,10 @@ function signalAt(
     candidates = scoreOpportunities(a).filter((o) => o.score >= minScore);
   }
   if (config.direction !== "both") candidates = candidates.filter((o) => o.direction === config.direction);
+  if (config.regimes && config.regimes.length > 0) {
+    const allowed = config.regimes;
+    candidates = candidates.filter((o) => o.regime != null && allowed.includes(o.regime));
+  }
   return candidates[0] ?? null;
 }
 

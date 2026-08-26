@@ -16,6 +16,7 @@ const schema = z.object({
   custom: customStrategySchema.nullable().optional(),
   minScore: z.number().min(0).max(100).default(55),
   direction: z.enum(["both", "long", "short"]).default("both"),
+  regimes: z.array(z.enum(["trending_up", "trending_down", "ranging", "volatile"])).min(1).max(4).optional(),
   maxHoldBars: z.number().int().min(5).max(500).default(100),
   bars: z.number().int().min(200).max(3000).default(1000),
   feePct: z.number().min(0).max(1).default(0),
@@ -30,7 +31,7 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: parsed.error.issues.map((i) => i.message).join("; ") }, { status: 400 });
   }
-  const { symbol, tf, strategyType, custom, minScore, direction, maxHoldBars, bars, feePct, slippagePct, sweep, walkforward, folds } = parsed.data;
+  const { symbol, tf, strategyType, custom, minScore, direction, regimes, maxHoldBars, bars, feePct, slippagePct, sweep, walkforward, folds } = parsed.data;
   if (strategyType === "custom" && !custom) {
     return NextResponse.json({ error: "custom strategy required when strategyType is custom" }, { status: 400 });
   }
@@ -52,6 +53,7 @@ export async function POST(req: NextRequest) {
       custom: custom ?? null,
       minScore,
       direction,
+      regimes: regimes ?? null,
       maxHoldBars,
       feePct,
       slippagePct,
