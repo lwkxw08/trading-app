@@ -8,7 +8,7 @@ import { scoreOpportunities } from "@/lib/strategies/confluence";
 import { evaluateCustomStrategy, type CustomStrategy } from "@/lib/strategies/custom";
 import { customStrategySchema } from "@/lib/strategies/customSchema";
 import { analyze, higherTimeframe } from "@/lib/strategies/engine";
-import { detectTrendBreakSetup, trendBreakOpportunity } from "@/lib/strategies/trendBreak";
+import { detectTrendBreakSetup, trendBreakOpportunity, trendBreakWatchItem, type TrendBreakWatch } from "@/lib/strategies/trendBreak";
 import type { EconomicEvent } from "@/lib/calendar/types";
 import type { Opportunity } from "@/lib/strategies/types";
 
@@ -16,25 +16,26 @@ export const runtime = "edge";
 
 async function runTrendBreakScan(symbols: string[]) {
   const results = await Promise.allSettled(
-    symbols.map(async (symbol): Promise<Opportunity[]> => {
+    symbols.map(async (symbol): Promise<{ opps: Opportunity[]; watching: TrendBreakWatch[] }> => {
       const provider = getProviderForSymbol(symbol);
       const [htfCandles, ltfCandles] = await Promise.all([
         provider.getCandles(symbol, "15m", 500),
         provider.getCandles(symbol, "1m", 1000),
       ]);
-      if (htfCandles.length < 60 || ltfCandles.length < 60) return [];
+      if (htfCandles.length < 60 || ltfCandles.length < 60) return { opps: [], watching: [] };
       const setup = detectTrendBreakSetup(htfCandles, ltfCandles);
       const opp = setup ? trendBreakOpportunity(symbol, setup) : null;
-      return opp ? [opp] : [];
+      const watch = setup ? trendBreakWatchItem(symbol, setup) : null;
+      return { opps: opp ? [opp] : [], watching: watch ? [watch] : [] };
     }),
   );
 
-  const opportunities = results
-    .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
-    .sort((a, b) => b.score - a.score);
+  const fulfilled = results.filter((r): r is PromiseFulfilledResult<{ opps: Opportunity[]; watching: TrendBreakWatch[] }> => r.status === "fulfilled");
+  const opportunities = fulfilled.flatMap((r) => r.value.opps).sort((a, b) => b.score - a.score);
+  const watching = fulfilled.flatMap((r) => r.value.watching);
   const errors = results.filter((r) => r.status === "rejected").length;
 
-  return { tf: "1m" as Timeframe, scanned: symbols.length, errors, opportunities };
+  return { tf: "1m" as Timeframe, scanned: symbols.length, errors, opportunities, watching };
 }
 
 async function runScan(tf: Timeframe, symbols: string[], strategy: CustomStrategy | null) {

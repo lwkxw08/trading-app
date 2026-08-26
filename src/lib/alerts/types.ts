@@ -21,6 +21,8 @@ export interface SetupRule {
   tf: Timeframe;
   direction: "both" | "long" | "short";
   minScore: number;
+  /** Dedicated setup scan instead of built-in confluence. */
+  setup?: "trendbreak";
   cooldownMin: number;
   /** Per symbol+direction cooldown tracking (unix ms). */
   lastFired: Record<string, number>;

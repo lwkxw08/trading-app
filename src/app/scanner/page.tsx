@@ -7,9 +7,11 @@ import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { MARKETS, MARKET_LABELS, type Market } from "@/lib/market/universe";
+import { loadRules, saveRules } from "@/lib/alerts/store";
+import type { SetupRule } from "@/lib/alerts/types";
 import { captureSignals, loadSignals, saveSignals } from "@/lib/signals/store";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
-import { TREND_BREAK_STRATEGY_NAME } from "@/lib/strategies/trendBreak";
+import { TREND_BREAK_STRATEGY_NAME, type TrendBreakWatch } from "@/lib/strategies/trendBreak";
 import type { Opportunity } from "@/lib/strategies/types";
 
 const TREND_BREAK_ID = "__trendbreak";
@@ -18,6 +20,12 @@ function oppKey(opp: Opportunity): string {
   return `${opp.symbol}-${opp.timeframe}-${opp.direction}-${opp.generatedAt}`;
 }
 
+function uid(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const NEAR_MISS_MARGIN = 15;
+
 export default function Scanner() {
   const [tf, setTf] = useState<Timeframe>("4h");
   const [market, setMarket] = useState<Market>("crypto");
@@ -25,6 +33,8 @@ export default function Scanner() {
   const [direction, setDirection] = useState<"all" | "long" | "short">("all");
   const [minScore, setMinScore] = useState(40);
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
+  const [watching, setWatching] = useState<TrendBreakWatch[]>([]);
+  const [alerted, setAlerted] = useState<Set<string>>(new Set());
   const [meta, setMeta] = useState<{ scanned: number; errors: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [track, setTrack] = useState(false);
@@ -42,6 +52,7 @@ export default function Scanner() {
     setLoading(true);
     setTracked(null);
     setAddedSignals(new Set());
+    setAlerted(new Set());
     const saved = savedStrategies.find((s) => s.id === strategyId) ?? null;
     const trendBreak = strategyId === TREND_BREAK_ID;
     const strategyName = trendBreak ? TREND_BREAK_STRATEGY_NAME : saved ? saved.strategy.name : "Built-in confluence";
@@ -62,6 +73,7 @@ export default function Scanner() {
       .then((d) => {
         const opps: Opportunity[] = d.opportunities ?? [];
         setOpportunities(opps);
+        setWatching(d.watching ?? []);
         setMeta({ scanned: d.scanned ?? 0, errors: d.errors ?? 0 });
         if (track) {
           const qualifying = opps.filter((o) => o.score >= minScore && (direction === "all" || o.direction === direction));
@@ -82,6 +94,63 @@ export default function Scanner() {
 
   const filtered = opportunities.filter(
     (o) => o.score >= minScore && (direction === "all" || o.direction === direction),
+  );
+
+  const trendBreak = scanStrategyName === TREND_BREAK_STRATEGY_NAME;
+  const builtIn = scanStrategyName === "Built-in confluence";
+  const nearMisses = trendBreak
+    ? []
+    : opportunities.filter(
+        (o) => o.score < minScore && o.score >= minScore - NEAR_MISS_MARGIN && (direction === "all" || o.direction === direction),
+      );
+  const watchList = trendBreak
+    ? watching.filter((w) => direction === "all" || (w.direction === "bullish" ? "long" : "short") === direction)
+    : [];
+
+  const addAlert = useCallback((rule: SetupRule, key: string) => {
+    saveRules([rule, ...loadRules()]);
+    setAlerted((cur) => new Set(cur).add(key));
+  }, []);
+
+  const alertForWatch = useCallback(
+    (w: TrendBreakWatch) => {
+      addAlert(
+        {
+          id: uid(),
+          type: "setup",
+          enabled: true,
+          symbols: w.symbol,
+          tf: "1m",
+          direction: w.direction === "bullish" ? "long" : "short",
+          minScore: 70,
+          setup: "trendbreak",
+          cooldownMin: 30,
+          lastFired: {},
+        },
+        `tb-${w.symbol}-${w.direction}`,
+      );
+    },
+    [addAlert],
+  );
+
+  const alertForNearMiss = useCallback(
+    (o: Opportunity) => {
+      addAlert(
+        {
+          id: uid(),
+          type: "setup",
+          enabled: true,
+          symbols: o.symbol,
+          tf,
+          direction: o.direction,
+          minScore,
+          cooldownMin: 240,
+          lastFired: {},
+        },
+        oppKey(o),
+      );
+    },
+    [addAlert, tf, minScore],
   );
 
   const addToSignals = useCallback(
@@ -221,6 +290,70 @@ export default function Scanner() {
       </div>
       {!loading && filtered.length === 0 && (
         <p className="text-sm text-muted">No setups match the current filters.</p>
+      )}
+
+      {(watchList.length > 0 || nearMisses.length > 0) && (
+        <section className="space-y-3">
+          <div>
+            <h2 className="font-semibold">Developing setups · watch</h2>
+            <p className="text-xs text-muted">
+              Not actionable yet — forming setups and near-misses ({NEAR_MISS_MARGIN} points below min score). “Alert when
+              ready” creates a rule on the <Link href="/alerts" className="underline hover:text-foreground">Alerts</Link> page
+              (start monitoring there to be notified).
+            </p>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {watchList.map((w) => {
+              const key = `tb-${w.symbol}-${w.direction}`;
+              return (
+                <div key={key} className="rounded-lg border border-amber-500/40 bg-surface p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold">{w.symbol}</span>
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-400">
+                      {w.state.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  <p className={`mt-1 text-xs font-semibold ${w.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                    {w.direction === "bullish" ? "Bullish" : "Bearish"} · 15m break confirmed ({w.bosCount} BoS {w.priorTrend} run)
+                  </p>
+                  <p className="mt-1 text-xs text-muted">{w.stateDetail}</p>
+                  <button
+                    onClick={() => alertForWatch(w)}
+                    disabled={alerted.has(key)}
+                    className="mt-2 rounded-md border border-edge px-2.5 py-1 text-[11px] font-semibold text-muted hover:border-accent hover:text-foreground disabled:opacity-60"
+                  >
+                    {alerted.has(key) ? "✓ Alert created" : "Alert when ready"}
+                  </button>
+                </div>
+              );
+            })}
+            {nearMisses.map((opp, i) => (
+              <div key={`${opp.symbol}-${opp.direction}-${i}`} className="rounded-lg border border-amber-500/40 bg-surface p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold">{opp.symbol}</span>
+                  <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-400">
+                    watch · {opp.score}/{minScore}
+                  </span>
+                </div>
+                <p className={`mt-1 text-xs font-semibold ${opp.direction === "long" ? "text-bull" : "text-bear"}`}>
+                  {opp.direction.toUpperCase()} · score {opp.score} — {minScore - opp.score} below your threshold
+                </p>
+                <p className="mt-1 text-xs text-muted">
+                  {opp.factors.slice(0, 3).map((f) => f.name).join(" · ")}
+                </p>
+                {builtIn && (
+                  <button
+                    onClick={() => alertForNearMiss(opp)}
+                    disabled={alerted.has(oppKey(opp))}
+                    className="mt-2 rounded-md border border-edge px-2.5 py-1 text-[11px] font-semibold text-muted hover:border-accent hover:text-foreground disabled:opacity-60"
+                  >
+                    {alerted.has(oppKey(opp)) ? "✓ Alert created" : "Alert when ready"}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
       )}
     </div>
   );

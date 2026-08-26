@@ -117,10 +117,14 @@ export default function AnalyzeSymbol() {
     setTbSetup(null);
     setTbSelected(false);
     setTbLogged(false);
-    fetch(apiUrl(`/api/setups/trendbreak?symbol=${symbol}`))
-      .then((r) => r.json())
-      .then((d) => setTbSetup(d.setup ?? null))
-      .catch(() => {});
+    const load = () =>
+      fetch(apiUrl(`/api/setups/trendbreak?symbol=${symbol}`))
+        .then((r) => r.json())
+        .then((d) => setTbSetup(d.setup ?? null))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
   }, [symbol]);
 
   const onPriceClick = useCallback(
@@ -647,10 +651,10 @@ export default function AnalyzeSymbol() {
                         ? "bg-bull/15 text-bull"
                         : tbSetup.state === "invalidated"
                           ? "bg-bear/15 text-bear"
-                          : "bg-edge text-muted"
+                          : "bg-amber-500/15 text-amber-400"
                     }`}
                   >
-                    {tbSetup.state.replace(/_/g, " ")}
+                    {tbSetup.state === "awaiting_pullback" ? "forming · entry known" : tbSetup.state.replace(/_/g, " ")}
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-muted">
@@ -661,6 +665,16 @@ export default function AnalyzeSymbol() {
                   <p className="mt-1 text-xs text-muted">
                     Entry (FVG midpoint) {fmtPrice(tbSetup.entry)} · SL {fmtPrice(tbSetup.stopLoss)} · TP (3R){" "}
                     {fmtPrice(tbSetup.takeProfit)}
+                  </p>
+                )}
+                {tbSetup.state === "awaiting_pullback" && (
+                  <p className="mt-1 text-[10px] font-semibold text-amber-400">
+                    Actionable now — price has not pulled back yet; a limit order at the FVG midpoint captures the entry.
+                  </p>
+                )}
+                {(tbSetup.state === "awaiting_choch" || tbSetup.state === "awaiting_fvg") && (
+                  <p className="mt-1 text-[10px] text-amber-400">
+                    Forming — updates automatically every minute as the 1m leg develops.
                   </p>
                 )}
                 {tbSetup.state !== "invalidated" && tbSetup.fvg && (

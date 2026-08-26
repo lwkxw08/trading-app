@@ -234,7 +234,9 @@ export default function AlertsPage() {
                 <span className="flex-1">
                   {r.type === "price_level"
                     ? `${r.symbol} ${r.condition} ${r.level}${r.note ? ` — ${r.note}` : ""}`
-                    : `Setup ≥${r.minScore} · ${r.direction} · ${r.tf} · ${r.symbols || "default universe"}`}
+                    : r.setup === "trendbreak"
+                      ? `Trend Break ready · ${r.direction} · ${r.symbols || "default universe"}`
+                      : `Setup ≥${r.minScore} · ${r.direction} · ${r.tf} · ${r.symbols || "default universe"}`}
                 </span>
                 <span className="text-muted">{r.cooldownMin}m cooldown</span>
                 <button onClick={() => deleteRule(r.id)} className="text-bear hover:underline">

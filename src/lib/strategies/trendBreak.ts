@@ -226,6 +226,32 @@ export function detectTrendBreakSetup(htfCandles: Candle[], ltfCandles: Candle[]
   return { ...base, state, stateDetail };
 }
 
+/** A forming trend-break setup — the 15m context is in place but the 1m leg has not produced an entry yet. */
+export interface TrendBreakWatch {
+  symbol: string;
+  direction: Direction;
+  priorTrend: Direction;
+  bosCount: number;
+  breakPrice: number;
+  state: TrendBreakState;
+  stateDetail: string;
+  generatedAt: number;
+}
+
+export function trendBreakWatchItem(symbol: string, setup: TrendBreakSetup): TrendBreakWatch | null {
+  if (setup.state !== "awaiting_choch" && setup.state !== "awaiting_fvg") return null;
+  return {
+    symbol,
+    direction: setup.direction,
+    priorTrend: setup.priorTrend,
+    bosCount: setup.bosCount,
+    breakPrice: setup.breakPrice,
+    state: setup.state,
+    stateDetail: setup.stateDetail,
+    generatedAt: Date.now(),
+  };
+}
+
 /** Scanner shape for an actionable (FVG formed) trend-break setup. */
 export function trendBreakOpportunity(symbol: string, setup: TrendBreakSetup): Opportunity | null {
   if (setup.entry === null || setup.stopLoss === null || setup.takeProfit === null) return null;

@@ -54,10 +54,11 @@ export async function checkAlertRules(rules: AlertRule[]): Promise<{ events: Ale
   const setupRules = next.filter((r): r is Extract<AlertRule, { type: "setup" }> => r.type === "setup" && r.enabled);
   const scans = new Map<string, Promise<Opportunity[]>>();
   for (const rule of setupRules) {
-    const key = `${rule.symbols}|${rule.tf}`;
+    const key = `${rule.symbols}|${rule.tf}|${rule.setup ?? ""}`;
     if (!scans.has(key)) {
       const params = new URLSearchParams({ tf: rule.tf });
       if (rule.symbols.trim()) params.set("symbols", rule.symbols.trim());
+      if (rule.setup) params.set("setup", rule.setup);
       scans.set(
         key,
         fetch(apiUrl(`/api/scan?${params}`))
@@ -68,7 +69,7 @@ export async function checkAlertRules(rules: AlertRule[]): Promise<{ events: Ale
     }
   }
   for (const rule of setupRules) {
-    const opps = await scans.get(`${rule.symbols}|${rule.tf}`)!;
+    const opps = await scans.get(`${rule.symbols}|${rule.tf}|${rule.setup ?? ""}`)!;
     for (const opp of opps) {
       if (opp.score < rule.minScore) continue;
       if (rule.direction !== "both" && opp.direction !== rule.direction) continue;
@@ -80,7 +81,9 @@ export async function checkAlertRules(rules: AlertRule[]): Promise<{ events: Ale
         id: uid(),
         time: now,
         ruleId: rule.id,
-        message: `${opp.symbol} ${opp.direction.toUpperCase()} setup on ${rule.tf} — score ${opp.score}, entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`,
+        message: rule.setup === "trendbreak"
+          ? `${opp.symbol} ${opp.direction.toUpperCase()} 15m Trend Break → 1m FVG ready — entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`
+          : `${opp.symbol} ${opp.direction.toUpperCase()} setup on ${rule.tf} — score ${opp.score}, entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`,
       });
     }
   }
