@@ -7,7 +7,8 @@ import { apiUrl } from "@/components/api";
 import { fmtPrice } from "@/components/format";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomEvaluation, type CustomStrategy } from "@/lib/strategies/custom";
-import type { RiskSettings, StopRule, TargetRule } from "@/lib/strategies/risk";
+import { STRATEGY_PRESETS } from "@/lib/strategies/presets";
+import { describeStopRule, describeTargetRule, type RiskSettings, type StopRule, type TargetRule } from "@/lib/strategies/risk";
 import { addSavedStrategy, deleteSavedStrategy, loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import {
   METRIC_LIBRARY,
@@ -663,6 +664,49 @@ export default function StrategyLab() {
                 Conditions marked &quot;web only&quot; (volume profile, order blocks) are excluded from the Pine version.
               </p>
             )}
+          </section>
+
+          {/* Pre-built strategy presets */}
+          <section className="rounded-lg border border-edge bg-surface p-4">
+            <h2 className="font-semibold">Preset strategies</h2>
+            <p className="mt-1 text-xs text-muted">
+              Complete, ready-to-use configurations. Load one into the editor to tweak it, or save it straight to your
+              library to scan, evaluate and backtest with it.
+            </p>
+            <div className="mt-2 space-y-2">
+              {STRATEGY_PRESETS.map((p) => {
+                const alreadySaved = saved.some((s) => s.strategy.name === p.strategy.name);
+                return (
+                  <div key={p.id} className="rounded-md border border-edge bg-background px-3 py-2 text-sm">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold">{p.strategy.name}</span>
+                      <span className="flex items-center gap-2">
+                        <button
+                          onClick={() => loadStrategy(p.strategy)}
+                          className="rounded-md border border-edge px-2 py-1 text-xs font-semibold hover:bg-edge"
+                        >
+                          Load into editor
+                        </button>
+                        <button
+                          onClick={() => setSaved(addSavedStrategy(p.strategy, "manual"))}
+                          disabled={alreadySaved}
+                          className="rounded-md bg-accent px-2 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                        >
+                          {alreadySaved ? "In library ✓" : "Save to library"}
+                        </button>
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted">{p.summary}</p>
+                    <p className="mt-1 text-[11px] text-muted">
+                      {p.strategy.conditions.length} conditions · min score {p.strategy.minScore}
+                      {p.strategy.risk
+                        ? ` · SL: ${describeStopRule(p.strategy.risk.stop)} · TP: ${describeTargetRule(p.strategy.risk.target)}`
+                        : ""}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
           </section>
 
           {saved.length > 0 && (

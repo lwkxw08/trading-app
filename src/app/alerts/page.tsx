@@ -238,7 +238,9 @@ export default function AlertsPage() {
                       ? `Trend Break ready · ${r.direction} · ${r.symbols || "default universe"}`
                       : r.setup === "sessionopen"
                         ? `Session Open ready · ${r.direction} · ${r.symbols || "default universe"}`
-                        : `Setup ≥${r.minScore} · ${r.direction} · ${r.tf} · ${r.symbols || "default universe"}`}
+                        : r.setup === "pullbackvalue"
+                          ? `Pullback to Value ready · ${r.direction} · ${r.symbols || "default universe"}`
+                          : `Setup ≥${r.minScore} · ${r.direction} · ${r.tf} · ${r.symbols || "default universe"}`}
                 </span>
                 <span className="text-muted">{r.cooldownMin}m cooldown</span>
                 <button onClick={() => deleteRule(r.id)} className="text-bear hover:underline">

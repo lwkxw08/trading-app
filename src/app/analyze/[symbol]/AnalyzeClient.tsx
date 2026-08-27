@@ -24,6 +24,7 @@ import { REGIME_LABELS } from "@/lib/strategies/regime";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import { TREND_BREAK_STRATEGY_NAME, type TrendBreakSetup } from "@/lib/strategies/trendBreak";
 import { SESSION_OPEN_STRATEGY_NAME, type SessionOpenSetup } from "@/lib/strategies/sessionOpen";
+import { PULLBACK_VALUE_STRATEGY_NAME, type PullbackValueSetup } from "@/lib/strategies/pullbackValue";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
@@ -65,6 +66,8 @@ export default function AnalyzeSymbol() {
   const [tbLogged, setTbLogged] = useState(false);
   const [soSetup, setSoSetup] = useState<SessionOpenSetup | null>(null);
   const [soLogged, setSoLogged] = useState(false);
+  const [pvSetup, setPvSetup] = useState<PullbackValueSetup | null>(null);
+  const [pvLogged, setPvLogged] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
   const [news, setNews] = useState<NewsHeadline[]>([]);
@@ -143,6 +146,19 @@ export default function AnalyzeSymbol() {
     return () => clearInterval(t);
   }, [symbol]);
 
+  useEffect(() => {
+    setPvSetup(null);
+    setPvLogged(false);
+    const load = () =>
+      fetch(apiUrl(`/api/setups/pullbackvalue?symbol=${symbol}&tf=${tf}`))
+        .then((r) => r.json())
+        .then((d) => setPvSetup(d.setup ?? null))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, [symbol, tf]);
+
   const onPriceClick = useCallback(
     (price: number) => setDrawings(addDrawing(symbol, price)),
     [symbol],
@@ -216,6 +232,41 @@ export default function AnalyzeSymbol() {
       setSoLogged(true);
     },
     [symbol, analysis],
+  );
+
+  const logPvToJournal = useCallback(
+    (s: PullbackValueSetup) => {
+      if (s.entry === null || s.stopLoss === null || s.takeProfit === null || s.direction === null) return;
+      const trade: JournalTrade = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        symbol,
+        timeframe: tf,
+        direction: s.direction === "bullish" ? "long" : "short",
+        status: "open",
+        entryPrice: s.entry,
+        entryTime: Date.now(),
+        size: null,
+        stopLoss: s.stopLoss,
+        takeProfit: s.takeProfit,
+        strategyName: PULLBACK_VALUE_STRATEGY_NAME,
+        notes: `Logged from analysis card · ${s.zoneSource === "fvg" ? "FVG" : "order block"} + HVN value zone ${fmtPrice(s.zoneBottom ?? 0)}–${fmtPrice(s.zoneTop ?? 0)} · sweep of ${fmtPrice(s.sweptLevel ?? 0)} reclaimed · zone-edge entry ${fmtPrice(s.entry)}`,
+        snapshot: analysis
+          ? {
+              trendDirection: analysis.trend.direction,
+              htfDirection: analysis.higherTimeframeTrend?.direction,
+              rsi14: analysis.trend.rsi14,
+              confluenceScore: null,
+              factors: [],
+            }
+          : null,
+        exitPrice: null,
+        exitTime: null,
+        exitNotes: "",
+      };
+      saveTrades([trade, ...loadTrades()]);
+      setPvLogged(true);
+    },
+    [symbol, tf, analysis],
   );
 
   const logSetupToJournal = useCallback(
@@ -826,6 +877,74 @@ export default function AnalyzeSymbol() {
                       {soLogged ? "Logged to Journal" : "Log to Journal"}
                     </button>
                     {soLogged && (
+                      <Link href="/journal" className="text-[11px] text-accent hover:underline">
+                        View in Journal
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Pullback to value setup */}
+          {pvSetup && (
+            <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
+              <h2 className="mb-2 font-semibold">{PULLBACK_VALUE_STRATEGY_NAME} · {tf}</h2>
+              <div
+                className={`rounded-md border p-2 ${
+                  pvSetup.state === "invalidated" || pvSetup.state === "completed" ? "border-edge opacity-80" : "border-edge"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`font-semibold ${
+                      pvSetup.direction === "bullish" ? "text-bull" : pvSetup.direction === "bearish" ? "text-bear" : ""
+                    }`}
+                  >
+                    {pvSetup.direction === "bullish" ? "BUY setup" : pvSetup.direction === "bearish" ? "SELL setup" : "No bias yet"}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                      pvSetup.state === "armed" || pvSetup.state === "triggered"
+                        ? "bg-bull/15 text-bull"
+                        : pvSetup.state === "invalidated"
+                          ? "bg-bear/15 text-bear"
+                          : pvSetup.state === "completed"
+                            ? "bg-edge text-muted"
+                            : "bg-amber-500/15 text-amber-400"
+                    }`}
+                  >
+                    {pvSetup.state === "completed" ? "played out" : pvSetup.state.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  {pvSetup.zoneTop !== null && pvSetup.zoneBottom !== null
+                    ? `Value zone (${pvSetup.zoneSource === "fvg" ? "FVG" : "order block"} + HVN) ${fmtPrice(pvSetup.zoneBottom)} – ${fmtPrice(pvSetup.zoneTop)} · `
+                    : ""}
+                  {pvSetup.stateDetail}
+                </p>
+                {pvSetup.entry !== null && pvSetup.stopLoss !== null && pvSetup.takeProfit !== null && (
+                  <p className="mt-1 text-xs text-muted">
+                    Entry (zone edge) {fmtPrice(pvSetup.entry)} · SL {fmtPrice(pvSetup.stopLoss)} · TP (next HVN){" "}
+                    {fmtPrice(pvSetup.takeProfit)}
+                  </p>
+                )}
+                {(pvSetup.state === "awaiting_zone" || pvSetup.state === "awaiting_sweep") && (
+                  <p className="mt-1 text-[10px] text-amber-400">
+                    Forming — updates automatically every minute; “Alert when ready” is available from the Scanner watch card.
+                  </p>
+                )}
+                {(pvSetup.state === "armed" || pvSetup.state === "triggered") && pvSetup.entry !== null && (
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      onClick={() => logPvToJournal(pvSetup)}
+                      disabled={pvLogged}
+                      className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    >
+                      {pvLogged ? "Logged to Journal" : "Log to Journal"}
+                    </button>
+                    {pvLogged && (
                       <Link href="/journal" className="text-[11px] text-accent hover:underline">
                         View in Journal
                       </Link>
