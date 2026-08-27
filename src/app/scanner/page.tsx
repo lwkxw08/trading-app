@@ -12,9 +12,11 @@ import type { SetupRule } from "@/lib/alerts/types";
 import { captureSignals, loadSignals, saveSignals } from "@/lib/signals/store";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import { TREND_BREAK_STRATEGY_NAME, type TrendBreakWatch } from "@/lib/strategies/trendBreak";
+import { SESSION_OPEN_STRATEGY_NAME, type SessionOpenWatch } from "@/lib/strategies/sessionOpen";
 import type { Opportunity } from "@/lib/strategies/types";
 
 const TREND_BREAK_ID = "__trendbreak";
+const SESSION_OPEN_ID = "__sessionopen";
 
 function oppKey(opp: Opportunity): string {
   return `${opp.symbol}-${opp.timeframe}-${opp.direction}-${opp.generatedAt}`;
@@ -34,6 +36,7 @@ export default function Scanner() {
   const [minScore, setMinScore] = useState(40);
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [watching, setWatching] = useState<TrendBreakWatch[]>([]);
+  const [soWatching, setSoWatching] = useState<SessionOpenWatch[]>([]);
   const [alerted, setAlerted] = useState<Set<string>>(new Set());
   const [meta, setMeta] = useState<{ scanned: number; errors: number } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -55,7 +58,14 @@ export default function Scanner() {
     setAlerted(new Set());
     const saved = savedStrategies.find((s) => s.id === strategyId) ?? null;
     const trendBreak = strategyId === TREND_BREAK_ID;
-    const strategyName = trendBreak ? TREND_BREAK_STRATEGY_NAME : saved ? saved.strategy.name : "Built-in confluence";
+    const sessionOpen = strategyId === SESSION_OPEN_ID;
+    const strategyName = trendBreak
+      ? TREND_BREAK_STRATEGY_NAME
+      : sessionOpen
+        ? SESSION_OPEN_STRATEGY_NAME
+        : saved
+          ? saved.strategy.name
+          : "Built-in confluence";
     setScanStrategyName(strategyName);
     const request = saved
       ? fetch(apiUrl("/api/scan"), {
@@ -65,7 +75,7 @@ export default function Scanner() {
         })
       : fetch(
           apiUrl(
-            `/api/scan?${new URLSearchParams({ tf, market, ...(symbols.trim() ? { symbols: symbols.trim() } : {}), ...(trendBreak ? { setup: "trendbreak" } : {}) })}`,
+            `/api/scan?${new URLSearchParams({ tf, market, ...(symbols.trim() ? { symbols: symbols.trim() } : {}), ...(trendBreak ? { setup: "trendbreak" } : {}), ...(sessionOpen ? { setup: "sessionopen" } : {}) })}`,
           ),
         );
     request
@@ -73,7 +83,8 @@ export default function Scanner() {
       .then((d) => {
         const opps: Opportunity[] = d.opportunities ?? [];
         setOpportunities(opps);
-        setWatching(d.watching ?? []);
+        setWatching(trendBreak ? (d.watching ?? []) : []);
+        setSoWatching(sessionOpen ? (d.watching ?? []) : []);
         setMeta({ scanned: d.scanned ?? 0, errors: d.errors ?? 0 });
         if (track) {
           const qualifying = opps.filter((o) => o.score >= minScore && (direction === "all" || o.direction === direction));
@@ -97,8 +108,9 @@ export default function Scanner() {
   );
 
   const trendBreak = scanStrategyName === TREND_BREAK_STRATEGY_NAME;
+  const sessionOpenScan = scanStrategyName === SESSION_OPEN_STRATEGY_NAME;
   const builtIn = scanStrategyName === "Built-in confluence";
-  const nearMisses = trendBreak
+  const nearMisses = trendBreak || sessionOpenScan
     ? []
     : opportunities.filter(
         (o) => o.score < minScore && o.score >= minScore - NEAR_MISS_MARGIN && (direction === "all" || o.direction === direction),
@@ -128,6 +140,27 @@ export default function Scanner() {
           lastFired: {},
         },
         `tb-${w.symbol}-${w.direction}`,
+      );
+    },
+    [addAlert],
+  );
+
+  const alertForSessionWatch = useCallback(
+    (w: SessionOpenWatch) => {
+      addAlert(
+        {
+          id: uid(),
+          type: "setup",
+          enabled: true,
+          symbols: w.symbol,
+          tf: "5m",
+          direction: "both",
+          minScore: 70,
+          setup: "sessionopen",
+          cooldownMin: 60,
+          lastFired: {},
+        },
+        `so-${w.symbol}`,
       );
     },
     [addAlert],
@@ -219,6 +252,7 @@ export default function Scanner() {
           >
             <option value="">Built-in confluence</option>
             <option value={TREND_BREAK_ID}>{TREND_BREAK_STRATEGY_NAME}</option>
+            <option value={SESSION_OPEN_ID}>{SESSION_OPEN_STRATEGY_NAME}</option>
             {savedStrategies.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.strategy.name}
@@ -292,7 +326,7 @@ export default function Scanner() {
         <p className="text-sm text-muted">No setups match the current filters.</p>
       )}
 
-      {(watchList.length > 0 || nearMisses.length > 0) && (
+      {(watchList.length > 0 || soWatching.length > 0 || nearMisses.length > 0) && (
         <section className="space-y-3">
           <div>
             <h2 className="font-semibold">Developing setups · watch</h2>
@@ -320,6 +354,32 @@ export default function Scanner() {
                   <p className="mt-1 text-xs text-muted">{w.stateDetail}</p>
                   <button
                     onClick={() => alertForWatch(w)}
+                    disabled={alerted.has(key)}
+                    className="mt-2 rounded-md border border-edge px-2.5 py-1 text-[11px] font-semibold text-muted hover:border-accent hover:text-foreground disabled:opacity-60"
+                  >
+                    {alerted.has(key) ? "✓ Alert created" : "Alert when ready"}
+                  </button>
+                </div>
+              );
+            })}
+            {soWatching.map((w) => {
+              const key = `so-${w.symbol}`;
+              return (
+                <div key={key} className="rounded-lg border border-amber-500/40 bg-surface p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold">{w.symbol}</span>
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-400">
+                      {w.state.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-accent">{SESSION_OPEN_STRATEGY_NAME}</p>
+                  <p className="mt-1 text-xs font-semibold">
+                    {w.session}
+                    {w.rangeHigh !== null && w.rangeLow !== null ? ` · range so far ${w.rangeLow} – ${w.rangeHigh}` : ""}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">{w.stateDetail}</p>
+                  <button
+                    onClick={() => alertForSessionWatch(w)}
                     disabled={alerted.has(key)}
                     className="mt-2 rounded-md border border-edge px-2.5 py-1 text-[11px] font-semibold text-muted hover:border-accent hover:text-foreground disabled:opacity-60"
                   >

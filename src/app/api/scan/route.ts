@@ -9,6 +9,7 @@ import { evaluateCustomStrategy, type CustomStrategy } from "@/lib/strategies/cu
 import { customStrategySchema } from "@/lib/strategies/customSchema";
 import { analyze, higherTimeframe } from "@/lib/strategies/engine";
 import { detectTrendBreakSetup, trendBreakOpportunity, trendBreakWatchItem, type TrendBreakWatch } from "@/lib/strategies/trendBreak";
+import { detectSessionOpenSetup, sessionOpenOpportunity, sessionOpenWatchItem, type SessionOpenWatch } from "@/lib/strategies/sessionOpen";
 import type { EconomicEvent } from "@/lib/calendar/types";
 import type { Opportunity } from "@/lib/strategies/types";
 
@@ -36,6 +37,27 @@ async function runTrendBreakScan(symbols: string[]) {
   const errors = results.filter((r) => r.status === "rejected").length;
 
   return { tf: "1m" as Timeframe, scanned: symbols.length, errors, opportunities, watching };
+}
+
+async function runSessionOpenScan(symbols: string[]) {
+  const results = await Promise.allSettled(
+    symbols.map(async (symbol): Promise<{ opps: Opportunity[]; watching: SessionOpenWatch[] }> => {
+      const provider = getProviderForSymbol(symbol);
+      const candles = await provider.getCandles(symbol, "5m", 1000);
+      if (candles.length < 30) return { opps: [], watching: [] };
+      const setup = detectSessionOpenSetup(symbol, candles);
+      const opp = setup ? sessionOpenOpportunity(symbol, setup) : null;
+      const watch = setup ? sessionOpenWatchItem(symbol, setup) : null;
+      return { opps: opp ? [opp] : [], watching: watch ? [watch] : [] };
+    }),
+  );
+
+  const fulfilled = results.filter((r): r is PromiseFulfilledResult<{ opps: Opportunity[]; watching: SessionOpenWatch[] }> => r.status === "fulfilled");
+  const opportunities = fulfilled.flatMap((r) => r.value.opps).sort((a, b) => b.score - a.score);
+  const watching = fulfilled.flatMap((r) => r.value.watching);
+  const errors = results.filter((r) => r.status === "rejected").length;
+
+  return { tf: "5m" as Timeframe, scanned: symbols.length, errors, opportunities, watching };
 }
 
 async function runScan(tf: Timeframe, symbols: string[], strategy: CustomStrategy | null) {
@@ -80,6 +102,9 @@ export async function GET(req: NextRequest) {
 
   if (req.nextUrl.searchParams.get("setup") === "trendbreak") {
     return NextResponse.json(await runTrendBreakScan(symbols));
+  }
+  if (req.nextUrl.searchParams.get("setup") === "sessionopen") {
+    return NextResponse.json(await runSessionOpenScan(symbols));
   }
 
   return NextResponse.json(await runScan(tf, symbols, null));

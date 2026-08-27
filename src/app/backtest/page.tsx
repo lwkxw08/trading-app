@@ -23,6 +23,7 @@ import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy, type Weighted
 import type { RiskSettings } from "@/lib/strategies/risk";
 import { describeStopRule, describeTargetRule } from "@/lib/strategies/risk";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
+import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
 
 // Backtests run in the browser: the server only supplies candle history
 // (pure I/O), so long simulations never hit the host's per-request CPU limit.
@@ -159,6 +160,28 @@ export default function BacktestPage() {
   const [compareError, setCompareError] = useState<string | null>(null);
 
   const [loadedExtras, setLoadedExtras] = useState<{ name: string; userConditions?: WeightedUserCondition[]; risk?: RiskSettings } | null>(null);
+
+  // Session Open Range backtest (dedicated, deliberately simple)
+  const [soSymbol, setSoSymbol] = useState("BTCUSDT");
+  const [soDays, setSoDays] = useState(10);
+  const [soResult, setSoResult] = useState<SessionOpenBacktest | null>(null);
+  const [soLoading, setSoLoading] = useState(false);
+  const [soError, setSoError] = useState<string | null>(null);
+
+  const runSessionOpen = useCallback(() => {
+    setSoLoading(true);
+    setSoError(null);
+    setSoResult(null);
+    const sym = soSymbol.toUpperCase();
+    const bars = Math.min(3000, Math.max(300, soDays * 288)); // 288 5m bars/day
+    fetchHistory(sym, "5m", bars)
+      .then((h) => {
+        if (h.candles.length < 300) throw new Error("not enough 5m history for this symbol");
+        setSoResult(backtestSessionOpen(sym, h.candles));
+      })
+      .catch((e) => setSoError(e instanceof Error ? e.message : "backtest failed"))
+      .finally(() => setSoLoading(false));
+  }, [soSymbol, soDays]);
 
   useEffect(() => {
     setSavedRuns(loadRuns());
@@ -930,6 +953,122 @@ export default function BacktestPage() {
               is excluded (no historical calendar).
             </section>
           )}
+
+          <section className="rounded-lg border border-edge bg-surface p-4">
+            <h2 className="font-semibold">{SESSION_OPEN_STRATEGY_NAME} backtest</h2>
+            <p className="mt-1 text-xs text-muted">
+              Replays each session on 5m candles exactly like live detection: opening-hour range → direction at hour end
+              (first-hour development + EMA trend) → boundary-touch entry → SL outside the opposite boundary → TP one
+              range-span away (session-end close if neither hits). Session opens follow the instrument
+              ({sessionSpecFor(soSymbol || "BTCUSDT").label}).
+            </p>
+            <div className="mt-2 flex flex-wrap items-end gap-3 text-sm">
+              <label className="block">
+                <span className="text-xs text-muted">Symbol</span>
+                <div className="mt-1">
+                  <SymbolInput value={soSymbol} onChange={setSoSymbol} className={`${inputCls} w-40 font-mono uppercase`} />
+                </div>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">History: {soDays} days</span>
+                <input
+                  type="range"
+                  min={3}
+                  max={10}
+                  value={soDays}
+                  onChange={(e) => setSoDays(Number(e.target.value))}
+                  className="mt-2 block w-36"
+                />
+              </label>
+              <button
+                onClick={runSessionOpen}
+                disabled={soLoading}
+                className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {soLoading ? "Running…" : "Run session backtest"}
+              </button>
+            </div>
+            {soError && <p className="mt-2 text-xs text-bear">{soError}</p>}
+            {soResult && (
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Sessions</p>
+                    <p className="font-semibold">{soResult.sessions}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Trades</p>
+                    <p className="font-semibold">{soResult.trades.length}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">No direction</p>
+                    <p className="font-semibold">{soResult.noDirection}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">No touch</p>
+                    <p className="font-semibold">{soResult.noTouch}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Win rate</p>
+                    <p className="font-semibold">{soResult.trades.length > 0 ? `${soResult.winRatePct}%` : "—"}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Total R</p>
+                    <p className={`font-semibold ${soResult.totalR > 0 ? "text-bull" : soResult.totalR < 0 ? "text-bear" : ""}`}>
+                      {soResult.totalR >= 0 ? "+" : ""}
+                      {soResult.totalR}R
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Avg R</p>
+                    <p className="font-semibold">{soResult.trades.length > 0 ? `${soResult.avgR}R` : "—"}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Max DD</p>
+                    <p className="font-semibold">{soResult.maxDrawdownR}R</p>
+                  </div>
+                </div>
+                {soResult.trades.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-muted">
+                        <tr>
+                          <th className="py-1 pr-3">Session</th>
+                          <th className="py-1 pr-3">Direction</th>
+                          <th className="py-1 pr-3">Entry</th>
+                          <th className="py-1 pr-3">Exit</th>
+                          <th className="py-1 pr-3">Reason</th>
+                          <th className="py-1">R</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {soResult.trades.map((t, i) => (
+                          <tr key={i} className="border-t border-edge">
+                            <td className="py-1 pr-3 whitespace-nowrap">{fmtTime(t.sessionOpen)}</td>
+                            <td className={`py-1 pr-3 font-semibold ${t.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                              {t.direction === "bullish" ? "LONG" : "SHORT"}
+                            </td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.entry)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.exitPrice)}</td>
+                            <td className="py-1 pr-3 uppercase">{t.exitReason.replace(/_/g, " ")}</td>
+                            <td className={`py-1 font-mono ${t.rMultiple > 0 ? "text-bull" : t.rMultiple < 0 ? "text-bear" : ""}`}>
+                              {t.rMultiple >= 0 ? "+" : ""}
+                              {t.rMultiple.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted">
+                    No trades — sessions were skipped when the first-hour signals conflicted (no clear direction) or price
+                    never touched the trend-side boundary.
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
 
           <section className="rounded-lg border border-edge bg-surface p-4">
             <h2 className="font-semibold">Strategy comparison matrix</h2>

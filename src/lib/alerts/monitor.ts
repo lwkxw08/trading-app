@@ -83,7 +83,9 @@ export async function checkAlertRules(rules: AlertRule[]): Promise<{ events: Ale
         ruleId: rule.id,
         message: rule.setup === "trendbreak"
           ? `${opp.symbol} ${opp.direction.toUpperCase()} 15m Trend Break → 1m FVG ready — entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`
-          : `${opp.symbol} ${opp.direction.toUpperCase()} setup on ${rule.tf} — score ${opp.score}, entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`,
+          : rule.setup === "sessionopen"
+            ? `${opp.symbol} ${opp.direction.toUpperCase()} Session Open Range ready — entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`
+            : `${opp.symbol} ${opp.direction.toUpperCase()} setup on ${rule.tf} — score ${opp.score}, entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`,
       });
     }
   }

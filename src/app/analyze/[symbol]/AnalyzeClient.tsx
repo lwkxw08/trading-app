@@ -23,6 +23,7 @@ import type { CustomEvaluation } from "@/lib/strategies/custom";
 import { REGIME_LABELS } from "@/lib/strategies/regime";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import { TREND_BREAK_STRATEGY_NAME, type TrendBreakSetup } from "@/lib/strategies/trendBreak";
+import { SESSION_OPEN_STRATEGY_NAME, type SessionOpenSetup } from "@/lib/strategies/sessionOpen";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
@@ -62,6 +63,8 @@ export default function AnalyzeSymbol() {
   const [tbSetup, setTbSetup] = useState<TrendBreakSetup | null>(null);
   const [tbSelected, setTbSelected] = useState(false);
   const [tbLogged, setTbLogged] = useState(false);
+  const [soSetup, setSoSetup] = useState<SessionOpenSetup | null>(null);
+  const [soLogged, setSoLogged] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
   const [news, setNews] = useState<NewsHeadline[]>([]);
@@ -127,6 +130,19 @@ export default function AnalyzeSymbol() {
     return () => clearInterval(t);
   }, [symbol]);
 
+  useEffect(() => {
+    setSoSetup(null);
+    setSoLogged(false);
+    const load = () =>
+      fetch(apiUrl(`/api/setups/sessionopen?symbol=${symbol}`))
+        .then((r) => r.json())
+        .then((d) => setSoSetup(d.setup ?? null))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, [symbol]);
+
   const onPriceClick = useCallback(
     (price: number) => setDrawings(addDrawing(symbol, price)),
     [symbol],
@@ -163,6 +179,41 @@ export default function AnalyzeSymbol() {
       };
       saveTrades([trade, ...loadTrades()]);
       setTbLogged(true);
+    },
+    [symbol, analysis],
+  );
+
+  const logSoToJournal = useCallback(
+    (s: SessionOpenSetup) => {
+      if (s.entry === null || s.stopLoss === null || s.takeProfit === null || s.direction === null) return;
+      const trade: JournalTrade = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        symbol,
+        timeframe: "5m",
+        direction: s.direction === "bullish" ? "long" : "short",
+        status: "open",
+        entryPrice: s.entry,
+        entryTime: Date.now(),
+        size: null,
+        stopLoss: s.stopLoss,
+        takeProfit: s.takeProfit,
+        strategyName: SESSION_OPEN_STRATEGY_NAME,
+        notes: `Logged from analysis card · ${s.session} · opening range ${fmtPrice(s.rangeLow ?? 0)}–${fmtPrice(s.rangeHigh ?? 0)} · boundary entry ${fmtPrice(s.entry)}`,
+        snapshot: analysis
+          ? {
+              trendDirection: analysis.trend.direction,
+              htfDirection: analysis.higherTimeframeTrend?.direction,
+              rsi14: analysis.trend.rsi14,
+              confluenceScore: null,
+              factors: [],
+            }
+          : null,
+        exitPrice: null,
+        exitTime: null,
+        exitNotes: "",
+      };
+      saveTrades([trade, ...loadTrades()]);
+      setSoLogged(true);
     },
     [symbol, analysis],
   );
@@ -696,6 +747,80 @@ export default function AnalyzeSymbol() {
                     </button>
                     {tbLogged && (
                       <Link href="/journal" onClick={(e) => e.stopPropagation()} className="text-[11px] text-accent hover:underline">
+                        View in Journal
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Session open range setup */}
+          {soSetup && (
+            <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
+              <h2 className="mb-2 font-semibold">{SESSION_OPEN_STRATEGY_NAME}</h2>
+              <div className={`rounded-md border p-2 ${soSetup.state === "invalidated" ? "border-edge opacity-80" : "border-edge"}`}>
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`font-semibold ${
+                      soSetup.direction === "bullish" ? "text-bull" : soSetup.direction === "bearish" ? "text-bear" : ""
+                    }`}
+                  >
+                    {soSetup.direction === "bullish" ? "BUY setup" : soSetup.direction === "bearish" ? "SELL setup" : soSetup.session}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                      soSetup.state === "triggered"
+                        ? "bg-bull/15 text-bull"
+                        : soSetup.state === "invalidated"
+                          ? "bg-bear/15 text-bear"
+                          : "bg-amber-500/15 text-amber-400"
+                    }`}
+                  >
+                    {soSetup.state === "awaiting_touch" ? "forming · entry known" : soSetup.state.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  {soSetup.session}
+                  {soSetup.rangeHigh !== null && soSetup.rangeLow !== null
+                    ? ` · opening hour range ${fmtPrice(soSetup.rangeLow)} – ${fmtPrice(soSetup.rangeHigh)}`
+                    : ""}{" "}
+                  · {soSetup.stateDetail}
+                </p>
+                {soSetup.signals.length > 0 && (
+                  <p className="mt-1 text-xs text-muted">
+                    {soSetup.signals.map((s) => `${s.name}: ${s.direction === "bullish" ? "↑" : "↓"} ${s.detail}`).join(" · ")}
+                  </p>
+                )}
+                {soSetup.entry !== null && soSetup.stopLoss !== null && soSetup.takeProfit !== null && (
+                  <p className="mt-1 text-xs text-muted">
+                    Entry (range boundary) {fmtPrice(soSetup.entry)} · SL {fmtPrice(soSetup.stopLoss)} · TP (1× range span){" "}
+                    {fmtPrice(soSetup.takeProfit)}
+                  </p>
+                )}
+                {soSetup.state === "building_range" && (
+                  <p className="mt-1 text-[10px] text-amber-400">
+                    Forming — the first 60 minutes are still building the range; updates automatically every minute.
+                  </p>
+                )}
+                {soSetup.state === "awaiting_touch" && (
+                  <p className="mt-1 text-[10px] font-semibold text-amber-400">
+                    Direction set — waiting for price to touch the {soSetup.direction === "bullish" ? "upper" : "lower"} range
+                    boundary; a limit order at the boundary captures the entry.
+                  </p>
+                )}
+                {soSetup.state !== "invalidated" && soSetup.entry !== null && (
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      onClick={() => logSoToJournal(soSetup)}
+                      disabled={soLogged}
+                      className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    >
+                      {soLogged ? "Logged to Journal" : "Log to Journal"}
+                    </button>
+                    {soLogged && (
+                      <Link href="/journal" className="text-[11px] text-accent hover:underline">
                         View in Journal
                       </Link>
                     )}

@@ -236,7 +236,9 @@ export default function AlertsPage() {
                     ? `${r.symbol} ${r.condition} ${r.level}${r.note ? ` — ${r.note}` : ""}`
                     : r.setup === "trendbreak"
                       ? `Trend Break ready · ${r.direction} · ${r.symbols || "default universe"}`
-                      : `Setup ≥${r.minScore} · ${r.direction} · ${r.tf} · ${r.symbols || "default universe"}`}
+                      : r.setup === "sessionopen"
+                        ? `Session Open ready · ${r.direction} · ${r.symbols || "default universe"}`
+                        : `Setup ≥${r.minScore} · ${r.direction} · ${r.tf} · ${r.symbols || "default universe"}`}
                 </span>
                 <span className="text-muted">{r.cooldownMin}m cooldown</span>
                 <button onClick={() => deleteRule(r.id)} className="text-bear hover:underline">
