@@ -615,12 +615,12 @@ export default function AnalyzeSymbol() {
           </section>
 
           {/* Impulse HVN+FVG pullback setups */}
-          {analysis && analysis.hvnFvgPullbacks.filter((s) => s.state !== "invalidated").length > 0 && (
+          {analysis && analysis.hvnFvgPullbacks.filter((s) => s.state !== "invalidated" && s.state !== "completed").length > 0 && (
             <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
               <h2 className="mb-2 font-semibold">Impulse HVN + FVG Pullback</h2>
               <div className="space-y-2">
                 {analysis.hvnFvgPullbacks
-                  .filter((s) => s.state !== "invalidated")
+                  .filter((s) => s.state !== "invalidated" && s.state !== "completed")
                   .map((s) => (
                     <div
                       key={`${s.direction}-${s.impulseEndTime}`}
@@ -681,13 +681,13 @@ export default function AnalyzeSymbol() {
               <h2 className="mb-2 font-semibold">{TREND_BREAK_STRATEGY_NAME}</h2>
               <div
                 onClick={() => {
-                  if (tbSetup.state === "invalidated" || !tbSetup.fvg) return;
+                  if (tbSetup.state === "invalidated" || tbSetup.state === "completed" || !tbSetup.fvg) return;
                   setSelectedSetup(null);
                   setTbSelected((v) => !v);
                   if (tf !== "15m" && tf !== "1m") setTf("15m");
                 }}
                 className={`rounded-md border p-2 ${
-                  tbSetup.state === "invalidated" || !tbSetup.fvg
+                  tbSetup.state === "invalidated" || tbSetup.state === "completed" || !tbSetup.fvg
                     ? "border-edge opacity-80"
                     : `cursor-pointer ${tbSelected ? "border-accent ring-1 ring-accent" : "border-edge hover:border-accent/50"}`
                 }`}
@@ -702,10 +702,16 @@ export default function AnalyzeSymbol() {
                         ? "bg-bull/15 text-bull"
                         : tbSetup.state === "invalidated"
                           ? "bg-bear/15 text-bear"
-                          : "bg-amber-500/15 text-amber-400"
+                          : tbSetup.state === "completed"
+                            ? "bg-edge text-muted"
+                            : "bg-amber-500/15 text-amber-400"
                     }`}
                   >
-                    {tbSetup.state === "awaiting_pullback" ? "forming · entry known" : tbSetup.state.replace(/_/g, " ")}
+                    {tbSetup.state === "awaiting_pullback"
+                      ? "forming · entry known"
+                      : tbSetup.state === "completed"
+                        ? "played out"
+                        : tbSetup.state.replace(/_/g, " ")}
                   </span>
                 </div>
                 <p className="mt-1 text-xs text-muted">
@@ -728,12 +734,12 @@ export default function AnalyzeSymbol() {
                     Forming — updates automatically every minute as the 1m leg develops.
                   </p>
                 )}
-                {tbSetup.state !== "invalidated" && tbSetup.fvg && (
+                {tbSetup.state !== "invalidated" && tbSetup.state !== "completed" && tbSetup.fvg && (
                   <p className="mt-1 text-[10px] text-accent">
                     {tbSelected ? "Shown on chart — click to hide" : "Click to show on chart (switches to 15m)"}
                   </p>
                 )}
-                {tbSetup.state !== "invalidated" && tbSetup.entry !== null && (
+                {tbSetup.state !== "invalidated" && tbSetup.state !== "completed" && tbSetup.entry !== null && (
                   <div className="mt-2 flex items-center gap-3">
                     <button
                       onClick={(e) => {

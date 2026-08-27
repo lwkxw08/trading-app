@@ -22,6 +22,7 @@ export type TrendBreakState =
   | "awaiting_fvg" // 1m CHoCH found, waiting for an FVG in its direction
   | "awaiting_pullback" // FVG formed, waiting for price to return to its midpoint
   | "triggered" // price tagged the midpoint
+  | "completed" // the trade played out after entry (TP or SL reached)
   | "invalidated";
 
 export interface TrendBreakSetup {
@@ -219,6 +220,18 @@ export function detectTrendBreakSetup(htfCandles: Candle[], ltfCandles: Candle[]
       if (touchedEntry) {
         state = "triggered";
         stateDetail = "Price pulled back to the FVG midpoint — entry level tagged";
+      }
+    } else if (state === "triggered") {
+      const hitTarget = isLong ? c.high >= takeProfit : c.low <= takeProfit;
+      if (hitTarget) {
+        state = "completed";
+        stateDetail = "Setup played out — take profit was reached";
+        break;
+      }
+      if (hitStop) {
+        state = "completed";
+        stateDetail = "Setup played out — stop level was reached after entry";
+        break;
       }
     }
   }

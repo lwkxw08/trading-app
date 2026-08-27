@@ -49,7 +49,9 @@ export function suggestStopCandidates(a: StrategyAnalysis, direction: "long" | "
     push("Order block", bull ? ob.bottom - 0.1 * atrVal : ob.top + 0.1 * atrVal, "Beyond the order block that anchors the setup");
   }
 
-  const pullback = a.hvnFvgPullbacks.find((s) => s.direction === (bull ? "bullish" : "bearish") && s.state !== "invalidated");
+  const pullback = a.hvnFvgPullbacks.find(
+    (s) => s.direction === (bull ? "bullish" : "bearish") && s.state !== "invalidated" && s.state !== "completed",
+  );
   if (pullback) {
     push(
       "HVN+FVG zone",

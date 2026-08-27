@@ -316,6 +316,12 @@ export function detectHvnFvgPullbacks(
         touched = true;
         state = "in_pullback";
       } else if (touched) {
+        const reachedTarget = bull ? c.high >= target : c.low <= target;
+        if (reachedTarget) {
+          // the bounce ran to the target — the setup has played out
+          state = "completed";
+          break;
+        }
         const bounced = bull ? c.close > zoneTop : c.close < zoneBottom;
         if (bounced) state = "bounced";
       }

@@ -83,7 +83,7 @@ export interface HvnFvgPullback {
   target: number;
   /** suggested stop: beyond the zone with an ATR buffer */
   stopLoss: number;
-  state: "forming" | "in_pullback" | "bounced" | "invalidated";
+  state: "forming" | "in_pullback" | "bounced" | "completed" | "invalidated";
 }
 
 export interface LiquiditySweep {
