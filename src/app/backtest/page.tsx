@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import SymbolInput from "@/components/SymbolInput";
 import { getJson, postJson } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
@@ -93,6 +93,10 @@ interface SavedRun {
   totalR: number;
   profitFactor: number | null;
   maxDrawdownR: number;
+  /** Full result payload so the run can be reopened later (absent on legacy saves). */
+  maxHoldBars?: number;
+  result?: BacktestResult;
+  aiReview?: BacktestReview | null;
 }
 
 interface CompareRow {
@@ -114,6 +118,26 @@ function loadRuns(): SavedRun[] {
     return raw ? (JSON.parse(raw) as SavedRun[]) : [];
   } catch {
     return [];
+  }
+}
+
+/** Persist runs, shedding the heaviest payloads (oldest first) if the storage quota is hit. */
+function persistRuns(runs: SavedRun[]): void {
+  const attempt = [...runs];
+  for (let i = 0; i < runs.length + 1; i++) {
+    try {
+      localStorage.setItem(RUNS_KEY, JSON.stringify(attempt));
+      return;
+    } catch {
+      // strip the oldest full-result payload and retry with summaries only
+      for (let j = attempt.length - 1; j >= 0; j--) {
+        if (attempt[j].result) {
+          attempt[j] = { ...attempt[j], result: undefined, aiReview: attempt[j].aiReview };
+          break;
+        }
+        if (j === 0) return;
+      }
+    }
   }
 }
 
@@ -150,6 +174,7 @@ export default function BacktestPage() {
   const [aiReviewError, setAiReviewError] = useState<string | null>(null);
   const [savedStrategies, setSavedStrategies] = useState<SavedStrategy[]>([]);
   const [riskPct, setRiskPct] = useState(1);
+  const currentRunSavedId = useRef<string | null>(null);
 
   // Strategy comparison matrix
   const [compareSymbols, setCompareSymbols] = useState("BTCUSDT, ETHUSDT, SOLUSDT");
@@ -217,6 +242,7 @@ export default function BacktestPage() {
       setAiReview(null);
       setAiReviewError(null);
       setProgress(null);
+      currentRunSavedId.current = null;
       const sym = symbol.toUpperCase();
       const config: BacktestConfig = {
         strategyType,
@@ -295,7 +321,19 @@ export default function BacktestPage() {
           regime: t.regime,
         })),
       })
-      .then((d) => setAiReview(d.review))
+      .then((d) => {
+        setAiReview(d.review);
+        // if this result was already saved, attach the review to the saved run
+        const savedId = currentRunSavedId.current;
+        if (savedId) {
+          setSavedRuns((prev) => {
+            if (!prev.some((r) => r.id === savedId)) return prev;
+            const next = prev.map((r) => (r.id === savedId ? { ...r, aiReview: d.review } : r));
+            persistRuns(next);
+            return next;
+          });
+        }
+      })
       .catch((e) => setAiReviewError(e.message))
       .finally(() => setAiReviewLoading(false));
   }, [result, strategyType, custom, customMinScore, minScore, direction, activeRegimes, maxHoldBars, feePct, slippagePct]);
@@ -359,8 +397,9 @@ export default function BacktestPage() {
 
   const saveRun = useCallback(() => {
     if (!result) return;
+    const id = `run-${Date.now()}`;
     const entry: SavedRun = {
-      id: `run-${Date.now()}`,
+      id,
       savedAt: Date.now(),
       label: `${result.symbol} ${result.timeframe} ${strategyType === "builtin" ? `score≥${minScore}` : "custom"} ${direction}`,
       symbol: result.symbol,
@@ -377,22 +416,44 @@ export default function BacktestPage() {
       totalR: result.totalR,
       profitFactor: result.profitFactor,
       maxDrawdownR: result.maxDrawdownR,
+      maxHoldBars,
+      result,
+      aiReview: aiReview ?? null,
     };
+    currentRunSavedId.current = id;
     setSavedRuns((prev) => {
       const next = [entry, ...prev].slice(0, 30);
-      try {
-        localStorage.setItem(RUNS_KEY, JSON.stringify(next));
-      } catch {}
+      persistRuns(next);
       return next;
     });
-  }, [result, strategyType, minScore, customMinScore, direction, bars, feePct, slippagePct]);
+  }, [result, strategyType, minScore, customMinScore, direction, bars, feePct, slippagePct, maxHoldBars, aiReview]);
+
+  const restoreRun = useCallback((r: SavedRun) => {
+    if (!r.result) return;
+    setSymbol(r.symbol);
+    setTf(r.tf);
+    setStrategyType(r.strategyType);
+    if (r.strategyType === "builtin") setMinScore(r.minScore);
+    else setCustomMinScore(r.minScore);
+    setDirection(r.direction as "both" | "long" | "short");
+    setBars(r.bars);
+    setFeePct(r.feePct);
+    setSlippagePct(r.slippagePct);
+    if (r.maxHoldBars !== undefined) setMaxHoldBars(r.maxHoldBars);
+    setSweep(null);
+    setWalkforward(null);
+    setError(null);
+    setAiReviewError(null);
+    setResult(r.result);
+    setAiReview(r.aiReview ?? null);
+    currentRunSavedId.current = r.id;
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }, []);
 
   const deleteRun = useCallback((id: string) => {
     setSavedRuns((prev) => {
       const next = prev.filter((r) => r.id !== id);
-      try {
-        localStorage.setItem(RUNS_KEY, JSON.stringify(next));
-      } catch {}
+      persistRuns(next);
       return next;
     });
   }, []);
@@ -1150,6 +1211,10 @@ export default function BacktestPage() {
           {savedRuns.length > 0 && (
             <section className="rounded-lg border border-edge bg-surface p-4">
               <h2 className="font-semibold">Saved runs ({savedRuns.length})</h2>
+              <p className="mt-1 text-xs text-muted">
+                Click a run to reopen its full results (trades, equity curve, regime stats) and its AI review if one was
+                run — tweak the setup from the suggestions and re-run without losing the analysis.
+              </p>
               <div className="mt-2 overflow-x-auto">
                 <table className="w-full text-left text-xs">
                   <thead className="text-muted">
@@ -1169,7 +1234,20 @@ export default function BacktestPage() {
                   <tbody>
                     {savedRuns.map((r) => (
                       <tr key={r.id} className="border-t border-edge">
-                        <td className="py-1 pr-3 whitespace-nowrap">{r.label}</td>
+                        <td className="py-1 pr-3 whitespace-nowrap">
+                          {r.result ? (
+                            <button
+                              onClick={() => restoreRun(r)}
+                              className="text-accent hover:underline"
+                              title="Reopen this run's full results and AI review"
+                            >
+                              {r.label}
+                              {r.aiReview ? " · AI" : ""}
+                            </button>
+                          ) : (
+                            <span title="Saved before full-result storage — only the summary is available">{r.label}</span>
+                          )}
+                        </td>
                         <td className="py-1 pr-3">{r.bars}</td>
                         <td className="py-1 pr-3 font-mono">
                           {r.feePct}/{r.slippagePct}

@@ -25,6 +25,7 @@ import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedS
 import { TREND_BREAK_STRATEGY_NAME, type TrendBreakSetup } from "@/lib/strategies/trendBreak";
 import { SESSION_OPEN_STRATEGY_NAME, type SessionOpenSetup } from "@/lib/strategies/sessionOpen";
 import { PULLBACK_VALUE_STRATEGY_NAME, type PullbackValueSetup } from "@/lib/strategies/pullbackValue";
+import { STOCH_REVERSAL_STRATEGY_NAME, type StochReversalSetup } from "@/lib/strategies/stochReversal";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
@@ -68,6 +69,8 @@ export default function AnalyzeSymbol() {
   const [soLogged, setSoLogged] = useState(false);
   const [pvSetup, setPvSetup] = useState<PullbackValueSetup | null>(null);
   const [pvLogged, setPvLogged] = useState(false);
+  const [srSetup, setSrSetup] = useState<StochReversalSetup | null>(null);
+  const [srLogged, setSrLogged] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
   const [news, setNews] = useState<NewsHeadline[]>([]);
@@ -153,6 +156,19 @@ export default function AnalyzeSymbol() {
       fetch(apiUrl(`/api/setups/pullbackvalue?symbol=${symbol}&tf=${tf}`))
         .then((r) => r.json())
         .then((d) => setPvSetup(d.setup ?? null))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, [symbol, tf]);
+
+  useEffect(() => {
+    setSrSetup(null);
+    setSrLogged(false);
+    const load = () =>
+      fetch(apiUrl(`/api/setups/stochreversal?symbol=${symbol}&tf=${tf}`))
+        .then((r) => r.json())
+        .then((d) => setSrSetup(d.setup ?? null))
         .catch(() => {});
     load();
     const t = setInterval(load, 60_000);
@@ -265,6 +281,41 @@ export default function AnalyzeSymbol() {
       };
       saveTrades([trade, ...loadTrades()]);
       setPvLogged(true);
+    },
+    [symbol, tf, analysis],
+  );
+
+  const logSrToJournal = useCallback(
+    (s: StochReversalSetup) => {
+      if (s.entry === null || s.stopLoss === null || s.takeProfit === null || s.direction === null) return;
+      const trade: JournalTrade = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        symbol,
+        timeframe: tf,
+        direction: s.direction === "bullish" ? "long" : "short",
+        status: "open",
+        entryPrice: s.entry,
+        entryTime: Date.now(),
+        size: null,
+        stopLoss: s.stopLoss,
+        takeProfit: s.takeProfit,
+        strategyName: STOCH_REVERSAL_STRATEGY_NAME,
+        notes: `Logged from analysis card · ${s.pattern === "double_top" ? "double top" : "double bottom"} · stoch ${s.stochAtSecond !== null ? s.stochAtSecond.toFixed(0) : "-"} · ${s.confirmation === "choch" ? "CHoCH" : "neckline break"} confirmed · neckline retest entry ${fmtPrice(s.entry)}`,
+        snapshot: analysis
+          ? {
+              trendDirection: analysis.trend.direction,
+              htfDirection: analysis.higherTimeframeTrend?.direction,
+              rsi14: analysis.trend.rsi14,
+              confluenceScore: null,
+              factors: [],
+            }
+          : null,
+        exitPrice: null,
+        exitTime: null,
+        exitNotes: "",
+      };
+      saveTrades([trade, ...loadTrades()]);
+      setSrLogged(true);
     },
     [symbol, tf, analysis],
   );
@@ -945,6 +996,74 @@ export default function AnalyzeSymbol() {
                       {pvLogged ? "Logged to Journal" : "Log to Journal"}
                     </button>
                     {pvLogged && (
+                      <Link href="/journal" className="text-[11px] text-accent hover:underline">
+                        View in Journal
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Stochastic double top/bottom setup */}
+          {srSetup && srSetup.state !== "awaiting_pattern" && (
+            <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
+              <h2 className="mb-2 font-semibold">{STOCH_REVERSAL_STRATEGY_NAME} · {tf}</h2>
+              <div
+                className={`rounded-md border p-2 ${
+                  srSetup.state === "invalidated" || srSetup.state === "completed" ? "border-edge opacity-80" : "border-edge"
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`font-semibold ${
+                      srSetup.direction === "bullish" ? "text-bull" : srSetup.direction === "bearish" ? "text-bear" : ""
+                    }`}
+                  >
+                    {srSetup.direction === "bullish" ? "BUY setup" : srSetup.direction === "bearish" ? "SELL setup" : "No bias yet"}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                      srSetup.state === "armed" || srSetup.state === "triggered"
+                        ? "bg-bull/15 text-bull"
+                        : srSetup.state === "invalidated"
+                          ? "bg-bear/15 text-bear"
+                          : srSetup.state === "completed"
+                            ? "bg-edge text-muted"
+                            : "bg-amber-500/15 text-amber-400"
+                    }`}
+                  >
+                    {srSetup.state === "completed" ? "played out" : srSetup.state.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  {srSetup.pattern !== null
+                    ? `${srSetup.pattern === "double_top" ? "Double top" : "Double bottom"}${srSetup.stochAtSecond !== null ? ` · stoch ${srSetup.stochAtSecond.toFixed(0)} at second ${srSetup.pattern === "double_top" ? "peak" : "trough"}` : ""}${srSetup.neckline !== null ? ` · neckline ${fmtPrice(srSetup.neckline)}` : ""} · `
+                    : ""}
+                  {srSetup.stateDetail}
+                </p>
+                {srSetup.entry !== null && srSetup.stopLoss !== null && srSetup.takeProfit !== null && (
+                  <p className="mt-1 text-xs text-muted">
+                    Entry (neckline retest) {fmtPrice(srSetup.entry)} · SL {fmtPrice(srSetup.stopLoss)} · TP{" "}
+                    {fmtPrice(srSetup.takeProfit)}
+                  </p>
+                )}
+                {srSetup.state === "awaiting_confirmation" && (
+                  <p className="mt-1 text-[10px] text-amber-400">
+                    Forming — awaiting price-action confirmation; updates every minute. “Alert when ready” is available from the Scanner watch card.
+                  </p>
+                )}
+                {(srSetup.state === "armed" || srSetup.state === "triggered") && srSetup.entry !== null && (
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      onClick={() => logSrToJournal(srSetup)}
+                      disabled={srLogged}
+                      className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    >
+                      {srLogged ? "Logged to Journal" : "Log to Journal"}
+                    </button>
+                    {srLogged && (
                       <Link href="/journal" className="text-[11px] text-accent hover:underline">
                         View in Journal
                       </Link>

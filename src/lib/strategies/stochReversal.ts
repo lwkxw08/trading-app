@@ -1,0 +1,373 @@
+import { atr, sma } from "@/lib/indicators/core";
+import type { Candle, Timeframe } from "@/lib/market/types";
+import { detectStructureBreaks, detectSwings } from "./detectors";
+import type { Direction, Opportunity } from "./types";
+
+export const STOCH_REVERSAL_STRATEGY_NAME = "Stochastic Double Top/Bottom";
+
+/**
+ * Stochastic double top/bottom reversal (cross-asset, single candle series):
+ * 1. Pattern: two swing highs at (or very near) the same level with a trough
+ *    between them — a double top (mirror: double bottom with a peak between),
+ * 2. Momentum: the slow stochastic is overbought (>= 80) at the second top
+ *    (mirror: oversold <= 20 at the second bottom),
+ * 3. Confirmation: price action must show the reversal is in effect — a close
+ *    through the neckline (the interim trough/peak) or a CHoCH against the
+ *    prior move — before the setup is actionable,
+ * 4. Levels: sell the neckline retest, SL just beyond the pattern extreme with
+ *    an ATR buffer, TP at the measured move (pattern height projected from the
+ *    neckline), extended to a minimum R multiple when the pattern is shallow.
+ */
+
+export type StochReversalState =
+  | "awaiting_pattern" // no qualifying double top/bottom with a stochastic extreme yet
+  | "awaiting_confirmation" // pattern formed — waiting for price action to confirm the reversal
+  | "armed" // reversal confirmed, entry at the neckline retest, not tagged yet
+  | "triggered" // entry level tagged after confirmation
+  | "completed" // the trade played out after entry (TP or SL reached)
+  | "invalidated";
+
+export interface StochReversalSetup {
+  kind: "stoch_reversal";
+  /** trade direction: bearish = double top short, bullish = double bottom long */
+  direction: Direction | null;
+  pattern: "double_top" | "double_bottom" | null;
+  firstExtreme: number | null;
+  secondExtreme: number | null;
+  firstExtremeTime: number | null;
+  secondExtremeTime: number | null;
+  /** the interim trough (double top) / peak (double bottom) */
+  neckline: number | null;
+  /** slow stochastic %K at the second top/bottom */
+  stochAtSecond: number | null;
+  /** what confirmed the reversal, once it has */
+  confirmation: "neckline_break" | "choch" | null;
+  confirmationTime: number | null;
+  entry: number | null;
+  stopLoss: number | null;
+  takeProfit: number | null;
+  state: StochReversalState;
+  stateDetail: string;
+}
+
+const STOCH_PERIOD = 14;
+const STOCH_SMOOTH = 3;
+const OVERBOUGHT = 80;
+const OVERSOLD = 20;
+const TOP_TOLERANCE_ATR = 0.75; // max distance between the two extremes
+const MIN_HEIGHT_ATR = 1; // min pattern height (extreme to neckline)
+const MAX_PATTERN_AGE_BARS = 120; // second extreme must be this recent
+const MAX_EXTREME_GAP_BARS = 80; // max bars between the two extremes
+const STOCH_WINDOW_BARS = 2; // stochastic extreme within +/- this of the second top/bottom
+const STOP_BUFFER_ATR = 0.5; // "some room" above/below the pattern extreme
+const MIN_RR = 1.5; // ensure a sensible R/R: at least this R when the measured move is nearer
+
+/** Slow stochastic %K: raw %K smoothed with an SMA. */
+export function stochasticK(candles: Candle[], period = STOCH_PERIOD, smooth = STOCH_SMOOTH): (number | null)[] {
+  const raw: (number | null)[] = new Array(candles.length).fill(null);
+  for (let i = period - 1; i < candles.length; i++) {
+    let hi = -Infinity;
+    let lo = Infinity;
+    for (let j = i - period + 1; j <= i; j++) {
+      if (candles[j].high > hi) hi = candles[j].high;
+      if (candles[j].low < lo) lo = candles[j].low;
+    }
+    raw[i] = hi === lo ? 50 : ((candles[i].close - lo) / (hi - lo)) * 100;
+  }
+  const firstIdx = raw.findIndex((v) => v !== null);
+  if (firstIdx < 0) return raw;
+  const smoothed = sma(raw.slice(firstIdx) as number[], smooth);
+  const out: (number | null)[] = new Array(candles.length).fill(null);
+  for (let i = 0; i < smoothed.length; i++) out[firstIdx + i] = smoothed[i];
+  return out;
+}
+
+function base(state: StochReversalState, stateDetail: string, partial?: Partial<StochReversalSetup>): StochReversalSetup {
+  return {
+    kind: "stoch_reversal",
+    direction: null,
+    pattern: null,
+    firstExtreme: null,
+    secondExtreme: null,
+    firstExtremeTime: null,
+    secondExtremeTime: null,
+    neckline: null,
+    stochAtSecond: null,
+    confirmation: null,
+    confirmationTime: null,
+    entry: null,
+    stopLoss: null,
+    takeProfit: null,
+    state,
+    stateDetail,
+    ...partial,
+  };
+}
+
+interface PatternCandidate {
+  pattern: "double_top" | "double_bottom";
+  direction: Direction;
+  first: { price: number; index: number; time: number };
+  second: { price: number; index: number; time: number };
+  neckline: number;
+  stochAtSecond: number;
+}
+
+function stochNearIndex(stoch: (number | null)[], index: number, wantHigh: boolean): number | null {
+  let best: number | null = null;
+  for (let i = Math.max(0, index - STOCH_WINDOW_BARS); i <= Math.min(stoch.length - 1, index + STOCH_WINDOW_BARS); i++) {
+    const v = stoch[i];
+    if (v === null) continue;
+    if (best === null || (wantHigh ? v > best : v < best)) best = v;
+  }
+  return best;
+}
+
+export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup | null {
+  if (candles.length < 80) return null;
+
+  const atr14 = atr(candles, 14);
+  const lastIdx = candles.length - 1;
+  const price = candles[lastIdx].close;
+  const atrNow = atr14[lastIdx] ?? price * 0.01;
+  const stoch = stochasticK(candles);
+  const swings = detectSwings(candles);
+
+  // find the most recent qualifying double top / double bottom
+  const highs = swings.filter((s) => s.type === "high");
+  const lows = swings.filter((s) => s.type === "low");
+  const candidates: PatternCandidate[] = [];
+
+  for (let b = highs.length - 1; b >= 1; b--) {
+    const second = highs[b];
+    if (lastIdx - second.index > MAX_PATTERN_AGE_BARS) break;
+    for (let a = b - 1; a >= 0; a--) {
+      const first = highs[a];
+      if (second.index - first.index > MAX_EXTREME_GAP_BARS) break;
+      if (Math.abs(second.price - first.price) > TOP_TOLERANCE_ATR * atrNow) continue;
+      const between = lows.filter((l) => l.index > first.index && l.index < second.index);
+      if (between.length === 0) continue;
+      const neckline = Math.min(...between.map((l) => l.price));
+      if (Math.max(first.price, second.price) - neckline < MIN_HEIGHT_ATR * atrNow) continue;
+      const st = stochNearIndex(stoch, second.index, true);
+      if (st === null || st < OVERBOUGHT) continue;
+      candidates.push({
+        pattern: "double_top",
+        direction: "bearish",
+        first: { price: first.price, index: first.index, time: first.time },
+        second: { price: second.price, index: second.index, time: second.time },
+        neckline,
+        stochAtSecond: st,
+      });
+      break;
+    }
+    if (candidates.length > 0 && candidates[candidates.length - 1].pattern === "double_top") break;
+  }
+
+  for (let b = lows.length - 1; b >= 1; b--) {
+    const second = lows[b];
+    if (lastIdx - second.index > MAX_PATTERN_AGE_BARS) break;
+    for (let a = b - 1; a >= 0; a--) {
+      const first = lows[a];
+      if (second.index - first.index > MAX_EXTREME_GAP_BARS) break;
+      if (Math.abs(second.price - first.price) > TOP_TOLERANCE_ATR * atrNow) continue;
+      const between = highs.filter((h) => h.index > first.index && h.index < second.index);
+      if (between.length === 0) continue;
+      const neckline = Math.max(...between.map((h) => h.price));
+      if (neckline - Math.min(first.price, second.price) < MIN_HEIGHT_ATR * atrNow) continue;
+      const st = stochNearIndex(stoch, second.index, false);
+      if (st === null || st > OVERSOLD) continue;
+      candidates.push({
+        pattern: "double_bottom",
+        direction: "bullish",
+        first: { price: first.price, index: first.index, time: first.time },
+        second: { price: second.price, index: second.index, time: second.time },
+        neckline,
+        stochAtSecond: st,
+      });
+      break;
+    }
+    if (candidates.length > 0 && candidates[candidates.length - 1].pattern === "double_bottom") break;
+  }
+
+  const cand = candidates.sort((a, b) => b.second.index - a.second.index)[0];
+  if (!cand) {
+    return base(
+      "awaiting_pattern",
+      "No double top/bottom with a stochastic extreme (80+/20-) at the second peak/trough yet",
+    );
+  }
+
+  const bearish = cand.pattern === "double_top";
+  const patternInfo: Partial<StochReversalSetup> = {
+    direction: cand.direction,
+    pattern: cand.pattern,
+    firstExtreme: cand.first.price,
+    secondExtreme: cand.second.price,
+    firstExtremeTime: cand.first.time,
+    secondExtremeTime: cand.second.time,
+    neckline: cand.neckline,
+    stochAtSecond: cand.stochAtSecond,
+  };
+
+  // levels
+  const patternExtreme = bearish ? Math.max(cand.first.price, cand.second.price) : Math.min(cand.first.price, cand.second.price);
+  const stopLoss = bearish ? patternExtreme + STOP_BUFFER_ATR * atrNow : patternExtreme - STOP_BUFFER_ATR * atrNow;
+  const entry = cand.neckline;
+  const risk = Math.abs(entry - stopLoss);
+  if (risk <= 0) return base("invalidated", "Degenerate risk distance", patternInfo);
+  const height = Math.abs(patternExtreme - cand.neckline);
+  const measured = bearish ? entry - height : entry + height;
+  const minTarget = bearish ? entry - MIN_RR * risk : entry + MIN_RR * risk;
+  const takeProfit = bearish ? Math.min(measured, minTarget) : Math.max(measured, minTarget);
+
+  // reversal confirmation after the second extreme: a close through the
+  // neckline, or a CHoCH in the reversal direction
+  const breaks = detectStructureBreaks(candles, swings);
+  const choch = breaks.find((br) => br.type === "choch" && br.direction === cand.direction && br.index > cand.second.index);
+  let confIndex = -1;
+  let confirmation: "neckline_break" | "choch" | null = null;
+  for (let i = cand.second.index + 1; i < candles.length; i++) {
+    const c = candles[i];
+    // pattern dies if price closes beyond the stop level before confirming
+    if (bearish ? c.close > stopLoss : c.close < stopLoss) {
+      return base(
+        "invalidated",
+        `Price closed ${bearish ? "above" : "below"} the double ${bearish ? "top" : "bottom"} before the reversal confirmed`,
+        patternInfo,
+      );
+    }
+    if (bearish ? c.close < cand.neckline : c.close > cand.neckline) {
+      confIndex = i;
+      confirmation = "neckline_break";
+      break;
+    }
+    if (choch && choch.index === i) {
+      confIndex = i;
+      confirmation = "choch";
+      break;
+    }
+  }
+
+  if (confIndex < 0) {
+    return base(
+      "awaiting_confirmation",
+      `Double ${bearish ? "top" : "bottom"} in place (stoch ${cand.stochAtSecond.toFixed(0)}) — waiting for price action to confirm the reversal (neckline ${bearish ? "break down" : "break up"} or CHoCH)`,
+      patternInfo,
+    );
+  }
+
+  const levels: Partial<StochReversalSetup> = {
+    ...patternInfo,
+    confirmation,
+    confirmationTime: candles[confIndex].time,
+    entry,
+    stopLoss,
+    takeProfit,
+  };
+
+  // walk price action after confirmation: neckline retest triggers, stop-side
+  // close invalidates, TP/SL hit after entry completes the setup
+  let state: StochReversalState = "armed";
+  let stateDetail = `Reversal confirmed (${confirmation === "choch" ? "CHoCH" : "neckline break"}) — ${bearish ? "sell" : "buy"} the neckline retest`;
+  for (let i = confIndex + 1; i < candles.length; i++) {
+    const c = candles[i];
+    if (state === "armed") {
+      if (bearish ? c.close > stopLoss : c.close < stopLoss) {
+        state = "invalidated";
+        stateDetail = "Price closed beyond the stop level before entry";
+        break;
+      }
+      if (c.low <= entry && c.high >= entry) {
+        state = "triggered";
+        stateDetail = "Neckline retest tagged the entry";
+        continue;
+      }
+      if (bearish ? c.low <= takeProfit : c.high >= takeProfit) {
+        state = "invalidated";
+        stateDetail = "Price ran to the target without retesting the neckline — entry missed";
+        break;
+      }
+    } else if (state === "triggered") {
+      if (bearish ? c.low <= takeProfit : c.high >= takeProfit) {
+        state = "completed";
+        stateDetail = "Setup played out — take profit was reached";
+        break;
+      }
+      if (bearish ? c.high >= stopLoss : c.low <= stopLoss) {
+        state = "completed";
+        stateDetail = "Setup played out — stop level was reached after entry";
+        break;
+      }
+    }
+  }
+
+  return base(state, stateDetail, levels);
+}
+
+/** A forming stochastic reversal — not actionable yet, worth watching. */
+export interface StochReversalWatch {
+  symbol: string;
+  timeframe: Timeframe;
+  direction: Direction | null;
+  pattern: "double_top" | "double_bottom" | null;
+  state: StochReversalState;
+  stateDetail: string;
+  neckline: number | null;
+  secondExtreme: number | null;
+  stochAtSecond: number | null;
+  generatedAt: number;
+}
+
+export function stochReversalWatchItem(symbol: string, timeframe: Timeframe, setup: StochReversalSetup): StochReversalWatch | null {
+  if (setup.state !== "awaiting_confirmation") return null;
+  return {
+    symbol,
+    timeframe,
+    direction: setup.direction,
+    pattern: setup.pattern,
+    state: setup.state,
+    stateDetail: setup.stateDetail,
+    neckline: setup.neckline,
+    secondExtreme: setup.secondExtreme,
+    stochAtSecond: setup.stochAtSecond,
+    generatedAt: Date.now(),
+  };
+}
+
+/** Scanner shape for an actionable stochastic reversal setup. */
+export function stochReversalOpportunity(symbol: string, timeframe: Timeframe, setup: StochReversalSetup): Opportunity | null {
+  if (setup.direction === null || setup.entry === null || setup.stopLoss === null || setup.takeProfit === null) return null;
+  if (setup.state !== "armed" && setup.state !== "triggered") return null;
+  const risk = Math.abs(setup.entry - setup.stopLoss);
+  const bearish = setup.direction === "bearish";
+  return {
+    symbol,
+    timeframe,
+    direction: bearish ? "short" : "long",
+    score: setup.state === "triggered" ? 85 : 75,
+    factors: [
+      {
+        name: bearish ? "Double top" : "Double bottom",
+        detail: `Second ${bearish ? "top" : "bottom"} at ${setup.secondExtreme?.toFixed(2)} vs first at ${setup.firstExtreme?.toFixed(2)}`,
+        weight: 25,
+      },
+      {
+        name: "Stochastic extreme",
+        detail: `Slow stochastic ${setup.stochAtSecond?.toFixed(0)} (${bearish ? ">= 80 overbought" : "<= 20 oversold"}) at the second ${bearish ? "top" : "bottom"}`,
+        weight: 25,
+      },
+      {
+        name: "Reversal confirmation",
+        detail: setup.confirmation === "choch" ? "CHoCH against the prior move" : `Close through the neckline ${setup.neckline?.toFixed(2)}`,
+        weight: 25,
+      },
+      { name: "Entry", detail: setup.stateDetail, weight: setup.state === "triggered" ? 10 : 0 },
+    ],
+    entry: setup.entry,
+    stopLoss: setup.stopLoss,
+    takeProfit: setup.takeProfit,
+    riskRewardRatio: risk > 0 ? Math.abs(setup.takeProfit - setup.entry) / risk : 0,
+    generatedAt: Date.now(),
+  };
+}

@@ -1,6 +1,7 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { apiUrl } from "./api";
 import { useFavorites } from "./useFavorites";
 
 interface Props {
@@ -14,6 +15,18 @@ interface Props {
   withStar?: boolean;
 }
 
+interface Suggestion {
+  symbol: string;
+  name: string;
+  assetClass: "crypto" | "stocks" | "forex";
+}
+
+const CLASS_LABEL: Record<Suggestion["assetClass"], string> = {
+  crypto: "crypto",
+  stocks: "stock/ETF",
+  forex: "forex",
+};
+
 function splitSymbols(value: string): string[] {
   return value
     .split(",")
@@ -24,6 +37,9 @@ function splitSymbols(value: string): string[] {
 export default function SymbolInput({ value, onChange, placeholder, className, multi = false, withStar = true }: Props) {
   const { favorites, toggle } = useFavorites();
   const [open, setOpen] = useState(false);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queryRef = useRef("");
 
   const current = value.trim().toUpperCase();
   const selected = useMemo(() => (multi ? splitSymbols(value) : []), [multi, value]);
@@ -35,6 +51,32 @@ export default function SymbolInput({ value, onChange, placeholder, className, m
     const pool = multi ? favorites.filter((f) => !selected.includes(f)) : favorites;
     return query ? pool.filter((f) => f.includes(query)) : pool;
   }, [favorites, multi, selected, query]);
+
+  // Type-ahead: search the full instrument universe (crypto pairs, stocks/ETFs, forex).
+  useEffect(() => {
+    queryRef.current = query;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (query.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    debounceRef.current = setTimeout(() => {
+      fetch(apiUrl(`/api/symbols?q=${encodeURIComponent(query)}`))
+        .then((r) => r.json())
+        .then((d: { suggestions?: Suggestion[] }) => {
+          if (queryRef.current === query) setSuggestions(d.suggestions ?? []);
+        })
+        .catch(() => {});
+    }, 250);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [query]);
+
+  const searchResults = useMemo(
+    () => suggestions.filter((s) => !options.includes(s.symbol) && (!multi || !selected.includes(s.symbol))),
+    [suggestions, options, multi, selected],
+  );
 
   const pick = (symbol: string) => {
     if (multi) {
@@ -81,8 +123,8 @@ export default function SymbolInput({ value, onChange, placeholder, className, m
           {isFav ? "★" : "☆"}
         </button>
       )}
-      {open && (options.length > 0 || (multi && favorites.length > 0)) && (
-        <ul className="absolute left-0 top-full z-20 mt-1 max-h-56 w-full min-w-40 overflow-auto rounded-md border border-edge bg-surface py-1 shadow-lg">
+      {open && (options.length > 0 || searchResults.length > 0 || (multi && favorites.length > 0)) && (
+        <ul className="absolute left-0 top-full z-20 mt-1 max-h-56 w-full min-w-48 overflow-auto rounded-md border border-edge bg-surface py-1 shadow-lg">
           {multi && favorites.length > 0 && (
             <li>
               <button
@@ -105,6 +147,21 @@ export default function SymbolInput({ value, onChange, placeholder, className, m
               >
                 <span className="mr-1 text-amber-400">★</span>
                 {f}
+              </button>
+            </li>
+          ))}
+          {searchResults.map((s) => (
+            <li key={`s-${s.symbol}`}>
+              <button
+                type="button"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pick(s.symbol)}
+                className="block w-full px-2 py-1 text-left text-xs hover:bg-edge"
+                title={s.name || s.symbol}
+              >
+                <span className="font-mono">{s.symbol}</span>
+                <span className="ml-2 text-[10px] uppercase text-muted">{CLASS_LABEL[s.assetClass]}</span>
+                {s.name && <span className="ml-2 truncate text-[10px] text-muted">{s.name}</span>}
               </button>
             </li>
           ))}

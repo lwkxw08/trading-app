@@ -22,7 +22,7 @@ export interface SetupRule {
   direction: "both" | "long" | "short";
   minScore: number;
   /** Dedicated setup scan instead of built-in confluence. */
-  setup?: "trendbreak" | "sessionopen" | "pullbackvalue";
+  setup?: "trendbreak" | "sessionopen" | "pullbackvalue" | "stochreversal";
   cooldownMin: number;
   /** Per symbol+direction cooldown tracking (unix ms). */
   lastFired: Record<string, number>;
