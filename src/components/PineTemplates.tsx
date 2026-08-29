@@ -73,7 +73,7 @@ export default function PineTemplates() {
                 key={t.kind}
                 onClick={() => {
                   setKind(t.kind);
-                  setRewardMultiple(t.kind === "trend_break" ? 3 : 2);
+                  setRewardMultiple(t.kind === "trend_break" ? 3 : t.kind === "stoch_reversal" ? 1.5 : 2);
                 }}
                 className={`rounded-lg border p-3 text-left text-sm ${
                   kind === t.kind ? "border-accent bg-accent/10" : "border-edge hover:border-muted"
@@ -109,10 +109,10 @@ export default function PineTemplates() {
               </>
             )}
             <Num label="Risk %" value={riskPercent} onChange={setRiskPercent} step={0.1} />
-            {kind !== "trend_break" && (
+            {kind !== "trend_break" && kind !== "stoch_reversal" && (
               <Num label="ATR stop ×" value={atrStopMultiplier} onChange={setAtrStopMultiplier} step={0.25} />
             )}
-            <Num label="Reward (R)" value={rewardMultiple} onChange={setRewardMultiple} step={0.5} />
+            <Num label={kind === "stoch_reversal" ? "Min reward (R)" : "Reward (R)"} value={rewardMultiple} onChange={setRewardMultiple} step={0.5} />
           </div>
 
           <button

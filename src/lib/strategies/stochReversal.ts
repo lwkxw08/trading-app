@@ -305,6 +305,257 @@ export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup 
   return base(state, stateDetail, levels);
 }
 
+const SWING_LOOKBACK = 5; // detectSwings default — a swing confirms this many bars after its extreme
+
+export interface StochReversalTrade {
+  pattern: "double_top" | "double_bottom";
+  direction: Direction;
+  secondExtremeTime: number;
+  confirmation: "neckline_break" | "choch";
+  confirmationTime: number;
+  entry: number;
+  stopLoss: number;
+  takeProfit: number;
+  entryTime: number;
+  exitTime: number;
+  exitPrice: number;
+  exitReason: "tp" | "sl";
+  rMultiple: number;
+}
+
+export interface StochReversalBacktest {
+  symbol: string;
+  timeframe: Timeframe;
+  bars: number;
+  patterns: number;
+  unconfirmed: number;
+  missed: number;
+  openAtEnd: number;
+  trades: StochReversalTrade[];
+  wins: number;
+  losses: number;
+  winRatePct: number;
+  totalR: number;
+  avgR: number;
+  profitFactor: number;
+  maxDrawdownR: number;
+  equityR: number[];
+}
+
+/**
+ * Replay the stochastic double top/bottom strategy over a single candle
+ * series, exactly as live detection resolves it: qualifying pattern (two
+ * near-equal extremes, interim neckline, stochastic 80+/20- at the second),
+ * reversal confirmation (neckline close-through or CHoCH), then the neckline
+ * retest entry with SL beyond the extreme and the measured-move/min-R target.
+ * No look-ahead: a pattern only becomes tradeable once its second swing has
+ * confirmed (SWING_LOOKBACK bars later), so entries are never filled before
+ * the pattern was knowable. One position at a time; a bar spanning both SL
+ * and TP counts as a stop (conservative).
+ */
+export function backtestStochReversal(symbol: string, timeframe: Timeframe, candles: Candle[]): StochReversalBacktest {
+  const n = candles.length;
+  const atr14 = atr(candles, 14);
+  const stoch = stochasticK(candles);
+  const swings = detectSwings(candles, SWING_LOOKBACK);
+  const breaks = detectStructureBreaks(candles, swings);
+  const highs = swings.filter((s) => s.type === "high");
+  const lows = swings.filter((s) => s.type === "low");
+
+  const candidates: PatternCandidate[] = [];
+  for (let b = 1; b < highs.length; b++) {
+    const second = highs[b];
+    const atrHere = atr14[second.index] ?? candles[second.index].close * 0.01;
+    for (let a = b - 1; a >= 0; a--) {
+      const first = highs[a];
+      if (second.index - first.index > MAX_EXTREME_GAP_BARS) break;
+      if (Math.abs(second.price - first.price) > TOP_TOLERANCE_ATR * atrHere) continue;
+      const between = lows.filter((l) => l.index > first.index && l.index < second.index);
+      if (between.length === 0) continue;
+      const neckline = Math.min(...between.map((l) => l.price));
+      if (Math.max(first.price, second.price) - neckline < MIN_HEIGHT_ATR * atrHere) continue;
+      const st = stochNearIndex(stoch, second.index, true);
+      if (st === null || st < OVERBOUGHT) continue;
+      candidates.push({
+        pattern: "double_top",
+        direction: "bearish",
+        first: { price: first.price, index: first.index, time: first.time },
+        second: { price: second.price, index: second.index, time: second.time },
+        neckline,
+        stochAtSecond: st,
+      });
+      break;
+    }
+  }
+  for (let b = 1; b < lows.length; b++) {
+    const second = lows[b];
+    const atrHere = atr14[second.index] ?? candles[second.index].close * 0.01;
+    for (let a = b - 1; a >= 0; a--) {
+      const first = lows[a];
+      if (second.index - first.index > MAX_EXTREME_GAP_BARS) break;
+      if (Math.abs(second.price - first.price) > TOP_TOLERANCE_ATR * atrHere) continue;
+      const between = highs.filter((h) => h.index > first.index && h.index < second.index);
+      if (between.length === 0) continue;
+      const neckline = Math.max(...between.map((h) => h.price));
+      if (neckline - Math.min(first.price, second.price) < MIN_HEIGHT_ATR * atrHere) continue;
+      const st = stochNearIndex(stoch, second.index, false);
+      if (st === null || st > OVERSOLD) continue;
+      candidates.push({
+        pattern: "double_bottom",
+        direction: "bullish",
+        first: { price: first.price, index: first.index, time: first.time },
+        second: { price: second.price, index: second.index, time: second.time },
+        neckline,
+        stochAtSecond: st,
+      });
+      break;
+    }
+  }
+  candidates.sort((x, y) => x.second.index - y.second.index);
+
+  const trades: StochReversalTrade[] = [];
+  let unconfirmed = 0;
+  let missed = 0;
+  let openAtEnd = 0;
+  let busyUntil = -1; // index of the last trade's exit — one position at a time
+
+  for (const cand of candidates) {
+    if (cand.second.index <= busyUntil) continue;
+    const bearish = cand.pattern === "double_top";
+    const atrHere = atr14[cand.second.index] ?? candles[cand.second.index].close * 0.01;
+    const patternExtreme = bearish ? Math.max(cand.first.price, cand.second.price) : Math.min(cand.first.price, cand.second.price);
+    const stopLoss = bearish ? patternExtreme + STOP_BUFFER_ATR * atrHere : patternExtreme - STOP_BUFFER_ATR * atrHere;
+    const entry = cand.neckline;
+    const risk = Math.abs(entry - stopLoss);
+    if (risk <= 0) continue;
+    const height = Math.abs(patternExtreme - cand.neckline);
+    const measured = bearish ? entry - height : entry + height;
+    const minTarget = bearish ? entry - MIN_RR * risk : entry + MIN_RR * risk;
+    const takeProfit = bearish ? Math.min(measured, minTarget) : Math.max(measured, minTarget);
+    const detectIdx = cand.second.index + SWING_LOOKBACK; // pattern knowable only once the second swing confirmed
+    const choch = breaks.find((br) => br.type === "choch" && br.direction === cand.direction && br.index > cand.second.index);
+
+    // confirmation: close through the neckline or a CHoCH in the reversal direction
+    let confIdx = -1;
+    let confirmation: "neckline_break" | "choch" | null = null;
+    let dead = false;
+    for (let i = cand.second.index + 1; i < n; i++) {
+      const c = candles[i];
+      if (bearish ? c.close > stopLoss : c.close < stopLoss) {
+        dead = true;
+        break;
+      }
+      if (bearish ? c.close < cand.neckline : c.close > cand.neckline) {
+        confIdx = i;
+        confirmation = "neckline_break";
+        break;
+      }
+      if (choch && choch.index === i) {
+        confIdx = i;
+        confirmation = "choch";
+        break;
+      }
+    }
+    if (dead || confIdx < 0 || confirmation === null) {
+      unconfirmed++;
+      continue;
+    }
+
+    // armed: wait for the neckline retest (only once the pattern was knowable)
+    let entryIdx = -1;
+    let noEntry = false;
+    for (let i = confIdx + 1; i < n; i++) {
+      const c = candles[i];
+      if (bearish ? c.close > stopLoss : c.close < stopLoss) {
+        noEntry = true;
+        break;
+      }
+      if (c.low <= entry && c.high >= entry && i >= detectIdx) {
+        entryIdx = i;
+        break;
+      }
+      if (bearish ? c.low <= takeProfit : c.high >= takeProfit) {
+        noEntry = true;
+        break;
+      }
+    }
+    if (noEntry || entryIdx < 0) {
+      missed++;
+      continue;
+    }
+
+    // in trade: SL checked before TP (conservative on bars spanning both)
+    let exit: { index: number; price: number; reason: "tp" | "sl" } | null = null;
+    for (let i = entryIdx + 1; i < n; i++) {
+      const c = candles[i];
+      if (bearish ? c.high >= stopLoss : c.low <= stopLoss) {
+        exit = { index: i, price: stopLoss, reason: "sl" };
+        break;
+      }
+      if (bearish ? c.low <= takeProfit : c.high >= takeProfit) {
+        exit = { index: i, price: takeProfit, reason: "tp" };
+        break;
+      }
+    }
+    if (!exit) {
+      openAtEnd++;
+      continue;
+    }
+
+    trades.push({
+      pattern: cand.pattern,
+      direction: cand.direction,
+      secondExtremeTime: cand.second.time,
+      confirmation,
+      confirmationTime: candles[confIdx].time,
+      entry,
+      stopLoss,
+      takeProfit,
+      entryTime: candles[entryIdx].time,
+      exitTime: candles[exit.index].time,
+      exitPrice: exit.price,
+      exitReason: exit.reason,
+      rMultiple: exit.reason === "tp" ? Number((Math.abs(takeProfit - entry) / risk).toFixed(2)) : -1,
+    });
+    busyUntil = exit.index;
+  }
+
+  const wins = trades.filter((t) => t.rMultiple > 0).length;
+  const losses = trades.filter((t) => t.rMultiple <= 0).length;
+  const totalR = trades.reduce((s, t) => s + t.rMultiple, 0);
+  const grossWin = trades.filter((t) => t.rMultiple > 0).reduce((s, t) => s + t.rMultiple, 0);
+  const grossLoss = Math.abs(trades.filter((t) => t.rMultiple < 0).reduce((s, t) => s + t.rMultiple, 0));
+  const equityR: number[] = [];
+  let eq = 0;
+  let peak = 0;
+  let maxDd = 0;
+  for (const t of trades) {
+    eq += t.rMultiple;
+    equityR.push(Number(eq.toFixed(2)));
+    peak = Math.max(peak, eq);
+    maxDd = Math.max(maxDd, peak - eq);
+  }
+
+  return {
+    symbol: symbol.toUpperCase(),
+    timeframe,
+    bars: n,
+    patterns: candidates.length,
+    unconfirmed,
+    missed,
+    openAtEnd,
+    trades,
+    wins,
+    losses,
+    winRatePct: trades.length ? Number(((wins / trades.length) * 100).toFixed(1)) : 0,
+    totalR: Number(totalR.toFixed(2)),
+    avgR: trades.length ? Number((totalR / trades.length).toFixed(2)) : 0,
+    profitFactor: grossLoss > 0 ? Number((grossWin / grossLoss).toFixed(2)) : grossWin > 0 ? Infinity : 0,
+    maxDrawdownR: Number(maxDd.toFixed(2)),
+    equityR,
+  };
+}
+
 /** A forming stochastic reversal — not actionable yet, worth watching. */
 export interface StochReversalWatch {
   symbol: string;

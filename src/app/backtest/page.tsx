@@ -24,6 +24,7 @@ import type { RiskSettings } from "@/lib/strategies/risk";
 import { describeStopRule, describeTargetRule } from "@/lib/strategies/risk";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
+import { backtestStochReversal, STOCH_REVERSAL_STRATEGY_NAME, type StochReversalBacktest } from "@/lib/strategies/stochReversal";
 
 // Backtests run in the browser: the server only supplies candle history
 // (pure I/O), so long simulations never hit the host's per-request CPU limit.
@@ -207,6 +208,28 @@ export default function BacktestPage() {
       .catch((e) => setSoError(e instanceof Error ? e.message : "backtest failed"))
       .finally(() => setSoLoading(false));
   }, [soSymbol, soDays]);
+
+  // Stochastic Double Top/Bottom backtest (dedicated, deliberately simple)
+  const [srSymbol, setSrSymbol] = useState("BTCUSDT");
+  const [srTf, setSrTf] = useState<Timeframe>("1h");
+  const [srBars, setSrBars] = useState(1500);
+  const [srResult, setSrResult] = useState<StochReversalBacktest | null>(null);
+  const [srLoading, setSrLoading] = useState(false);
+  const [srError, setSrError] = useState<string | null>(null);
+
+  const runStochReversal = useCallback(() => {
+    setSrLoading(true);
+    setSrError(null);
+    setSrResult(null);
+    const sym = srSymbol.toUpperCase();
+    fetchHistory(sym, srTf, srBars)
+      .then((h) => {
+        if (h.candles.length < 200) throw new Error("not enough history for this symbol/timeframe");
+        setSrResult(backtestStochReversal(sym, srTf, h.candles));
+      })
+      .catch((e) => setSrError(e instanceof Error ? e.message : "backtest failed"))
+      .finally(() => setSrLoading(false));
+  }, [srSymbol, srTf, srBars]);
 
   useEffect(() => {
     setSavedRuns(loadRuns());
@@ -1125,6 +1148,139 @@ export default function BacktestPage() {
                   <p className="text-xs text-muted">
                     No trades — sessions were skipped when the first-hour signals conflicted (no clear direction) or price
                     never touched the trend-side boundary.
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-lg border border-edge bg-surface p-4">
+            <h2 className="font-semibold">{STOCH_REVERSAL_STRATEGY_NAME} backtest</h2>
+            <p className="mt-1 text-xs text-muted">
+              Replays the dedicated detector exactly like live detection: double top/bottom (two near-equal extremes)
+              with the slow stochastic 80+/20- at the second one → reversal confirmation (neckline close-through or
+              CHoCH) → entry on the neckline retest → SL beyond the pattern extreme with ATR room → measured-move TP
+              (min 1.5R). No look-ahead: patterns only count once their second swing was confirmable; a bar spanning
+              both SL and TP counts as a stop.
+            </p>
+            <div className="mt-2 flex flex-wrap items-end gap-3 text-sm">
+              <label className="block">
+                <span className="text-xs text-muted">Symbol</span>
+                <div className="mt-1">
+                  <SymbolInput value={srSymbol} onChange={setSrSymbol} className={`${inputCls} w-40 font-mono uppercase`} />
+                </div>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">Timeframe</span>
+                <select value={srTf} onChange={(e) => setSrTf(e.target.value as Timeframe)} className={`${inputCls} mt-1 block`}>
+                  {TIMEFRAMES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">History: {srBars} bars</span>
+                <input
+                  type="range"
+                  min={300}
+                  max={3000}
+                  step={100}
+                  value={srBars}
+                  onChange={(e) => setSrBars(Number(e.target.value))}
+                  className="mt-2 block w-36"
+                />
+              </label>
+              <button
+                onClick={runStochReversal}
+                disabled={srLoading}
+                className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {srLoading ? "Running…" : "Run stochastic backtest"}
+              </button>
+            </div>
+            {srError && <p className="mt-2 text-xs text-bear">{srError}</p>}
+            {srResult && (
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Patterns</p>
+                    <p className="font-semibold">{srResult.patterns}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Trades</p>
+                    <p className="font-semibold">{srResult.trades.length}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Unconfirmed</p>
+                    <p className="font-semibold">{srResult.unconfirmed}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">No retest</p>
+                    <p className="font-semibold">{srResult.missed}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Win rate</p>
+                    <p className="font-semibold">{srResult.trades.length > 0 ? `${srResult.winRatePct}%` : "—"}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Total R</p>
+                    <p className={`font-semibold ${srResult.totalR > 0 ? "text-bull" : srResult.totalR < 0 ? "text-bear" : ""}`}>
+                      {srResult.totalR >= 0 ? "+" : ""}
+                      {srResult.totalR}R
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Avg R</p>
+                    <p className="font-semibold">{srResult.trades.length > 0 ? `${srResult.avgR}R` : "—"}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Max DD</p>
+                    <p className="font-semibold">{srResult.maxDrawdownR}R</p>
+                  </div>
+                </div>
+                {srResult.openAtEnd > 0 && (
+                  <p className="text-xs text-muted">{srResult.openAtEnd} trade(s) still open at the end of the window (excluded from stats).</p>
+                )}
+                {srResult.trades.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-muted">
+                        <tr>
+                          <th className="py-1 pr-3">Entry time</th>
+                          <th className="py-1 pr-3">Pattern</th>
+                          <th className="py-1 pr-3">Confirmed by</th>
+                          <th className="py-1 pr-3">Entry</th>
+                          <th className="py-1 pr-3">Exit</th>
+                          <th className="py-1 pr-3">Reason</th>
+                          <th className="py-1">R</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {srResult.trades.map((t, i) => (
+                          <tr key={i} className="border-t border-edge">
+                            <td className="py-1 pr-3 whitespace-nowrap">{fmtTime(t.entryTime)}</td>
+                            <td className={`py-1 pr-3 font-semibold ${t.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                              {t.pattern === "double_bottom" ? "DBL BOTTOM · LONG" : "DBL TOP · SHORT"}
+                            </td>
+                            <td className="py-1 pr-3 uppercase">{t.confirmation.replace(/_/g, " ")}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.entry)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.exitPrice)}</td>
+                            <td className="py-1 pr-3 uppercase">{t.exitReason}</td>
+                            <td className={`py-1 font-mono ${t.rMultiple > 0 ? "text-bull" : t.rMultiple < 0 ? "text-bear" : ""}`}>
+                              {t.rMultiple >= 0 ? "+" : ""}
+                              {t.rMultiple.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted">
+                    No trades — patterns either never confirmed the reversal (no neckline break/CHoCH) or price never
+                    retested the neckline entry after confirming.
                   </p>
                 )}
               </div>

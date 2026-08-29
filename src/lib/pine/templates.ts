@@ -1,4 +1,4 @@
-export type PineStrategyKind = "ema_cross" | "rsi_reversal" | "fvg_signals" | "macd_momentum" | "trend_break";
+export type PineStrategyKind = "ema_cross" | "rsi_reversal" | "fvg_signals" | "macd_momentum" | "trend_break" | "stoch_reversal";
 
 export interface PineConfig {
   kind: PineStrategyKind;
@@ -25,6 +25,11 @@ export const PINE_TEMPLATES: { kind: PineStrategyKind; label: string; descriptio
     label: "15m Trend Break → 1m FVG",
     description: "Run on a 1m chart: 15m trend break + CHoCH, then 1m CHoCH → FVG midpoint entry, swing SL, 3R TP",
   },
+  {
+    kind: "stoch_reversal",
+    label: "Stochastic Double Top/Bottom",
+    description: "Double top/bottom with stochastic 80+/20-, neckline-break confirmation, retest entry, SL beyond the extreme, measured-move TP",
+  },
 ];
 
 /**
@@ -35,6 +40,7 @@ export const PINE_TEMPLATES: { kind: PineStrategyKind; label: string; descriptio
  */
 export function generatePineScript(cfg: PineConfig): string {
   if (cfg.kind === "trend_break") return trendBreakPineScript(cfg);
+  if (cfg.kind === "stoch_reversal") return stochReversalPineScript(cfg);
   const riskPercent = cfg.riskPercent ?? 1;
   const atrMult = cfg.atrStopMultiplier ?? 1.5;
   const rewardMult = cfg.rewardMultiple ?? 2;
@@ -293,6 +299,169 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
 `;
 }
 
+/**
+ * Dedicated indicator mirroring the app's "Stochastic Double Top/Bottom"
+ * detector: two swing highs at (or very near) the same level with the slow
+ * stochastic overbought (>= 80) at the second one (mirror: double bottom with
+ * <= 20), a close through the neckline confirming the reversal, then the
+ * sell/buy signal on the neckline retest — SL beyond the pattern extreme with
+ * an ATR buffer, TP at the measured move extended to a minimum R multiple.
+ * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
+ */
+function stochReversalPineScript(cfg: PineConfig): string {
+  const riskPercent = cfg.riskPercent ?? 1;
+  const minRR = cfg.rewardMultiple ?? 1.5;
+
+  return `//@version=6
+indicator("${sanitize(cfg.name)}", overlay=true, max_lines_count=500)
+
+// Double top/bottom + stochastic extreme reversal. Pattern pivots confirm
+// pivotLen bars after the extreme (no repaint); the reversal must confirm
+// with a close through the neckline before the retest entry can signal.
+
+// ── Inputs ─────────────────────────────────────────────────────────────
+accountSize = input.float(10000, "Account size", minval=1)
+riskPct     = input.float(${riskPercent}, "Risk % per trade", minval=0.1, maxval=10, step=0.1)
+stochLen    = input.int(14, "Stochastic %K length", minval=2)
+stochSmooth = input.int(3, "Stochastic smoothing", minval=1)
+obLevel     = input.float(80, "Overbought (double top)", minval=50, maxval=100)
+osLevel     = input.float(20, "Oversold (double bottom)", minval=0, maxval=50)
+pivotLen    = input.int(5, "Pivot lookback", minval=2)
+tolAtr      = input.float(0.75, "Max distance between the two extremes (ATR)", minval=0.1, step=0.05)
+minHeightAtr = input.float(1.0, "Min pattern height (ATR)", minval=0.1, step=0.1)
+maxGapBars  = input.int(80, "Max bars between the two extremes", minval=5)
+bufAtr      = input.float(0.5, "SL buffer beyond the extreme (ATR)", minval=0.0, step=0.1)
+minRR       = input.float(${minRR}, "Minimum reward multiple (R)", minval=0.5, step=0.25)
+
+// ── Stochastic + pivots ────────────────────────────────────────────────
+stochK = ta.sma(ta.stoch(close, high, low, stochLen), stochSmooth)
+atrValue = ta.atr(14)
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+// stochastic near the pivot bar (a small window around the extreme)
+kNearHigh = math.max(nz(stochK[pivotLen - 1], 0), math.max(nz(stochK[pivotLen], 0), nz(stochK[pivotLen + 1], 0)))
+kNearLow  = math.min(nz(stochK[pivotLen - 1], 100), math.min(nz(stochK[pivotLen], 100), nz(stochK[pivotLen + 1], 100)))
+
+// ── Pattern tracking ───────────────────────────────────────────────────
+// previous swing high/low (potential first extreme) + the interim neckline
+var float topA = na
+var int   topABar = na
+var float neckLow = na
+var float botA = na
+var int   botABar = na
+var float neckHigh = na
+
+// setup state: 0 idle · 1 pattern formed, awaiting confirmation · 2 armed (confirmed, awaiting retest) · 3 in trade
+var int state = 0
+var int dir = 0 // -1 short (double top), +1 long (double bottom)
+var float entry = na
+var float sl = na
+var float tp = na
+
+bool patternFormed = false
+
+if not na(ph)
+    if state == 0 and not na(topA) and not na(neckLow) and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel
+        dir := -1
+        entry := neckLow
+        patternHigh = math.max(ph, topA)
+        sl := patternHigh + bufAtr * atrValue
+        riskDist0 = sl - entry
+        height = patternHigh - neckLow
+        tp := math.min(entry - height, entry - minRR * riskDist0)
+        state := 1
+        patternFormed := true
+    topA := ph
+    topABar := bar_index - pivotLen
+    neckLow := na
+
+if not na(pl)
+    if state == 0 and not na(botA) and not na(neckHigh) and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel
+        dir := 1
+        entry := neckHigh
+        patternLow = math.min(pl, botA)
+        sl := patternLow - bufAtr * atrValue
+        riskDist0 = entry - sl
+        height = neckHigh - patternLow
+        tp := math.max(entry + height, entry + minRR * riskDist0)
+        state := 1
+        patternFormed := true
+    botA := pl
+    botABar := bar_index - pivotLen
+    neckHigh := na
+
+// track the interim neckline between the two extremes
+if not na(pl) and not na(topA)
+    neckLow := na(neckLow) ? pl : math.min(neckLow, pl)
+if not na(ph) and not na(botA)
+    neckHigh := na(neckHigh) ? ph : math.max(neckHigh, ph)
+
+// ── State machine: confirmation → retest entry → TP/SL ─────────────────
+bool confirmed = false
+bool buySignal = false
+bool sellSignal = false
+
+if state == 1
+    if dir == -1 ? close > sl : close < sl
+        state := 0 // died beyond the stop level before confirming
+    else if dir == -1 ? close < entry : close > entry
+        state := 2
+        confirmed := true
+
+if state == 2 and not confirmed // don't act on the confirmation bar itself
+    if dir == -1 ? close > sl : close < sl
+        state := 0 // closed beyond the stop before entry
+    else if high >= entry and low <= entry
+        sellSignal := dir == -1
+        buySignal := dir == 1
+        state := 3
+    else if dir == -1 ? low <= tp : high >= tp
+        state := 0 // ran to the target without retesting — entry missed
+
+if state == 3 and not (buySignal or sellSignal)
+    if dir == -1 ? high >= sl : low <= sl
+        state := 0 // stopped out
+    else if dir == -1 ? low <= tp : high >= tp
+        state := 0 // take profit reached
+
+if patternFormed or confirmed
+    line.new(bar_index, entry, bar_index + 30, entry, color=color.new(color.blue, 0), style=line.style_dashed, width=1)
+    line.new(bar_index, sl, bar_index + 30, sl, color=color.new(color.red, 0), style=line.style_dashed, width=1)
+    line.new(bar_index, tp, bar_index + 30, tp, color=color.new(color.green, 0), style=line.style_dashed, width=1)
+
+// ── Position size ──────────────────────────────────────────────────────
+riskAmount = accountSize * riskPct / 100
+riskDist   = nz(math.abs(entry - sl))
+posSize    = riskDist > 0 ? riskAmount / riskDist : 0.0
+
+// ── Plots ──────────────────────────────────────────────────────────────
+plot(stochK, "Slow stochastic %K", color=color.new(color.purple, 0), display=display.data_window)
+plotshape(buySignal,  title="Buy",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="BUY")
+plotshape(sellSignal, title="Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   size=size.small, text="SELL")
+bgcolor(state == 1 ? color.new(color.yellow, 92) : state == 2 ? color.new(color.blue, 92) : state == 3 ? color.new(color.teal, 92) : na, title="Setup state")
+
+var table info = table.new(position.top_right, 2, 5, border_width=1)
+if barstate.islast
+    stateTxt = state == 0 ? "idle" : state == 1 ? (dir == -1 ? "double top — awaiting confirmation" : "double bottom — awaiting confirmation") : state == 2 ? "armed — awaiting neckline retest" : "in trade"
+    table.cell(info, 0, 0, "Setup state", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 0, stateTxt, text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 1, "Entry (neckline)", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 1, na(entry) ? "—" : str.tostring(entry, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 2, "SL / TP", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 2, na(sl) ? "—" : str.tostring(sl, format.mintick) + " / " + str.tostring(tp, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 3, "Risk/trade", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 3, str.tostring(riskAmount, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 60))
+    table.cell(info, 0, 4, "Size (units)", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 1, 4, str.tostring(posSize, "#.####"), text_color=color.white, bgcolor=color.new(color.gray, 60))
+
+// ── Alerts ─────────────────────────────────────────────────────────────
+alertcondition(patternFormed, title="Pattern formed", message="${sanitize(cfg.name)}: double top/bottom with a stochastic extreme on {{ticker}} — awaiting reversal confirmation")
+alertcondition(confirmed, title="Reversal confirmed", message="${sanitize(cfg.name)}: reversal confirmed on {{ticker}} — watching for the neckline retest")
+alertcondition(buySignal,  title="Buy signal",  message="${sanitize(cfg.name)}: BUY {{ticker}} @ {{close}} (double bottom neckline retest)")
+alertcondition(sellSignal, title="Sell signal", message="${sanitize(cfg.name)}: SELL {{ticker}} @ {{close}} (double top neckline retest)")
+`;
+}
+
 function inputsFor(cfg: PineConfig): string {
   switch (cfg.kind) {
     case "ema_cross":
@@ -314,7 +483,8 @@ sigLen  = input.int(9, "MACD signal", minval=2)
 trendLen = input.int(200, "Trend EMA", minval=10)
 `;
     case "trend_break":
-      return ""; // generated by trendBreakPineScript
+    case "stoch_reversal":
+      return ""; // generated by a dedicated script builder
   }
 }
 
@@ -367,7 +537,8 @@ buySignal  = ta.crossover(hist, 0) and close > trendEma
 sellSignal = ta.crossunder(hist, 0) and close < trendEma
 `;
     case "trend_break":
-      return ""; // generated by trendBreakPineScript
+    case "stoch_reversal":
+      return ""; // generated by a dedicated script builder
   }
 }
 
