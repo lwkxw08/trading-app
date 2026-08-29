@@ -308,13 +308,17 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
+const STOCH_REVERSAL_PINE_BUILD = "v3";
+
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
   const minRR = cfg.rewardMultiple ?? 1.5;
 
   return `//@version=6
-indicator("${sanitize(cfg.name)}", overlay=true, max_lines_count=500)
+indicator("${sanitize(cfg.name)} [${STOCH_REVERSAL_PINE_BUILD}]", overlay=true, max_lines_count=500)
 
+// TradeIntel template build ${STOCH_REVERSAL_PINE_BUILD} — the build tag in the chart legend
+// identifies which generated version is running.
 // Double top/bottom + stochastic extreme reversal. Pattern pivots confirm
 // pivotLen bars after the extreme (no repaint); the reversal must confirm
 // with a close through the neckline before the retest entry can signal.
@@ -458,7 +462,7 @@ bgcolor(state == 1 ? color.new(color.yellow, 92) : state == 2 ? color.new(color.
 var table info = table.new(position.top_right, 2, 5, border_width=1)
 if barstate.islast
     stateTxt = state == 0 ? "idle" : state == 1 ? (dir == -1 ? "double top — awaiting confirmation" : "double bottom — awaiting confirmation") : state == 2 ? "armed — awaiting neckline retest" : "in trade"
-    table.cell(info, 0, 0, "Setup state", text_color=color.white, bgcolor=color.new(color.gray, 40))
+    table.cell(info, 0, 0, "Setup state (${STOCH_REVERSAL_PINE_BUILD})", text_color=color.white, bgcolor=color.new(color.gray, 40))
     table.cell(info, 1, 0, stateTxt, text_color=color.white, bgcolor=color.new(color.gray, 60))
     table.cell(info, 0, 1, "Entry (neckline)", text_color=color.white, bgcolor=color.new(color.gray, 40))
     table.cell(info, 1, 1, na(entry) ? "—" : str.tostring(entry, format.mintick), text_color=color.white, bgcolor=color.new(color.gray, 60))
