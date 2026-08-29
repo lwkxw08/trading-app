@@ -125,8 +125,8 @@ console.log(`stoch at peak2 (idx 79): ${st[79]?.toFixed(1)}`);
 console.log("--- double top (bearish) ---");
 show("awaiting_confirmation", candles.slice(0, marks.awaiting));
 show("armed", candles.slice(0, marks.armed));
-show("gated retest (stoch oversold => sell blocked, still armed)", candles.slice(0, marks.gated));
-show("triggered (stoch recovered at retest)", candles.slice(0, marks.triggered));
+show("gated retest (stoch not overbought => sell blocked, still armed)", candles.slice(0, marks.gated));
+show("triggered (stoch overbought at retest)", candles.slice(0, marks.triggered));
 show("completed", candles.slice(0, marks.completed));
 
 // invalidation pre-entry: after the pattern forms, close above the stop level
@@ -142,6 +142,6 @@ console.log("--- double bottom (bullish, mirrored) ---");
 const m = mirror(candles);
 show("awaiting_confirmation", m.slice(0, marks.awaiting));
 show("armed", m.slice(0, marks.armed));
-show("gated retest (stoch overbought => buy blocked, still armed)", m.slice(0, marks.gated));
-show("triggered (stoch recovered at retest)", m.slice(0, marks.triggered));
+show("gated retest (stoch not oversold => buy blocked, still armed)", m.slice(0, marks.gated));
+show("triggered (stoch oversold at retest)", m.slice(0, marks.triggered));
 show("completed", m.slice(0, marks.completed));

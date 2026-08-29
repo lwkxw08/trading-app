@@ -308,7 +308,7 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
-const STOCH_REVERSAL_PINE_BUILD = "v3";
+const STOCH_REVERSAL_PINE_BUILD = "v4";
 
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -337,7 +337,7 @@ maxGapBars  = input.int(80, "Max bars between the two extremes", minval=5)
 bufAtr      = input.float(0.5, "SL buffer beyond the extreme (ATR)", minval=0.0, step=0.1)
 minRR       = input.float(${minRR}, "Minimum reward multiple (R)", minval=0.5, step=0.25)
 maxAgeBars  = input.int(120, "Cancel unfilled setups after (bars)", minval=10)
-strictGate  = input.bool(false, "Strict stochastic at entry (require 80+/20- on the signal bar)")
+strictGate  = input.bool(true, "Strict stochastic at entry (SELL needs 80+, BUY needs 20- on the signal bar)")
 
 // ── Stochastic + pivots ────────────────────────────────────────────────
 stochK = ta.sma(ta.stoch(close, high, low, stochLen), stochSmooth)
@@ -422,9 +422,9 @@ if state == 1
         state := 2
         confirmed := true
 
-// gate at the signal bar: a SELL never fires while the stochastic is oversold and
-// a BUY never while it is overbought (the pattern itself already required the
-// extreme); strict mode additionally requires the full extreme on the signal bar
+// gate at the signal bar: a SELL only fires with the stochastic overbought and a
+// BUY only with it oversold; unticking strict mode relaxes this to only blocking
+// the opposite extreme (no sells while oversold, no buys while overbought)
 stochGateOk = strictGate ? (dir == -1 ? stochK >= obLevel : stochK <= osLevel) : (dir == -1 ? stochK > osLevel : stochK < obLevel)
 
 if state == 2 and not confirmed // don't act on the confirmation bar itself
@@ -454,6 +454,8 @@ riskDist   = nz(math.abs(entry - sl))
 posSize    = riskDist > 0 ? riskAmount / riskDist : 0.0
 
 // ── Plots ──────────────────────────────────────────────────────────────
+// the gate is judged on this line (smoothed %K) — compare it, not a separately
+// configured stochastic pane, when checking why a signal did or didn't fire
 plot(stochK, "Slow stochastic %K", color=color.new(color.purple, 0), display=display.data_window)
 plotshape(buySignal,  title="Buy",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="BUY")
 plotshape(sellSignal, title="Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   size=size.small, text="SELL")
