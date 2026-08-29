@@ -308,7 +308,7 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
-const STOCH_REVERSAL_PINE_BUILD = "v8";
+const STOCH_REVERSAL_PINE_BUILD = "v9";
 
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -342,7 +342,8 @@ entryMode   = input.string("both", "Entry mode", options=["retest", "breakout", 
 useTrendLeg = input.bool(true, "Require a prior trend leg into the pattern", tooltip="The move into the first extreme must span at least the leg size below — filters range-bound double tops/bottoms that have nothing to reverse.")
 trendLegAtr = input.float(3.0, "Min prior leg into the first extreme (ATR)", minval=0.5, step=0.5)
 trendLookback = input.int(40, "Prior leg lookback (bars)", minval=10)
-useDivergence = input.bool(true, "Require stochastic divergence at the second extreme", tooltip="The stochastic at the second top must be below its value at the first top (mirror for bottoms) — the standard double-top quality filter.")
+useDivergence = input.bool(true, "Require stochastic divergence at the second extreme", tooltip="The stochastic at the second top must not be clearly stronger than at the first top (mirror for bottoms) — the standard double-top quality filter, judged with the tolerance below so near-equal readings still qualify.")
+divTolerance = input.float(5.0, "Divergence tolerance (stochastic points)", minval=0.0, step=1.0, tooltip="The second extreme only fails the divergence filter when its stochastic exceeds the first extreme's by more than this — 0 restores the strict lower-than/higher-than rule.")
 breakMarginAtr = input.float(0.15, "Decisive neckline break margin (ATR)", minval=0.0, step=0.05, tooltip="The confirming close must clear the neckline by this margin — marginal squeaks through the neckline in chop are where most fakeouts come from. Set 0 to disable.")
 maxConsumed = input.float(0.5, "Max move consumed at breakout entry", minval=0.1, maxval=1.0, step=0.05, tooltip="A breakout entry is skipped when the confirmation close has already covered more than this fraction of the measured move past the neckline — late confirmations leave a target that can't realistically be reached.")
 useEngulf   = input.bool(true, "Engulfing candle trigger at the second extreme", tooltip="An engulfing reversal candle right at the second top/bottom — where the stochastic tagged the extreme and hasn't swung to the opposite one — confirms the reversal early: entered at the close of the bar where both the candle and the pattern are known, well before the neckline break would confirm. Only active outside retest entry mode.")
@@ -398,7 +399,7 @@ bool patternFormed = false
 
 // a newer qualifying pattern supersedes any unfilled setup (only an open trade is protected)
 if not na(ph)
-    if state != 3 and not na(topA) and not na(neckLow) and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel and (not useDivergence or kNearHigh < topAK) and (not useTrendLeg or topALeg >= trendLegAtr * atrValue)
+    if state != 3 and not na(topA) and not na(neckLow) and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel and (not useDivergence or kNearHigh < topAK + divTolerance) and (not useTrendLeg or topALeg >= trendLegAtr * atrValue)
         dir := -1
         entry := neckLow
         patternHigh = math.max(ph, topA)
@@ -417,7 +418,7 @@ if not na(ph)
     neckLow := na
 
 if not na(pl)
-    if state != 3 and not na(botA) and not na(neckHigh) and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel and (not useDivergence or kNearLow > botAK) and (not useTrendLeg or botALeg >= trendLegAtr * atrValue)
+    if state != 3 and not na(botA) and not na(neckHigh) and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel and (not useDivergence or kNearLow > botAK - divTolerance) and (not useTrendLeg or botALeg >= trendLegAtr * atrValue)
         dir := 1
         entry := neckHigh
         patternLow = math.min(pl, botA)

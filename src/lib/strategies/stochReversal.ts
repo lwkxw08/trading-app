@@ -89,6 +89,10 @@ export interface StochReversalFilters {
   decisiveBreak: boolean;
 }
 
+/** Divergence is judged with some slack: the second extreme's stochastic only fails
+ * the filter when it is clearly stronger than the first (beyond this many points). */
+const DIVERGENCE_TOLERANCE = 5;
+
 export const DEFAULT_STOCH_REVERSAL_FILTERS: StochReversalFilters = {
   trendFilter: true,
   divergenceFilter: true,
@@ -228,7 +232,7 @@ export function detectStochReversalSetup(
       if (st === null || st < OVERBOUGHT) continue;
       if (filters.divergenceFilter) {
         const stFirst = stochNearIndex(stoch, first.index, true);
-        if (stFirst !== null && st >= stFirst) continue;
+        if (stFirst !== null && st >= stFirst + DIVERGENCE_TOLERANCE) continue;
       }
       if (filters.trendFilter && !priorLegOk(candles, first, true, atrNow)) continue;
       candidates.push({
@@ -259,7 +263,7 @@ export function detectStochReversalSetup(
       if (st === null || st > OVERSOLD) continue;
       if (filters.divergenceFilter) {
         const stFirst = stochNearIndex(stoch, first.index, false);
-        if (stFirst !== null && st <= stFirst) continue;
+        if (stFirst !== null && st <= stFirst - DIVERGENCE_TOLERANCE) continue;
       }
       if (filters.trendFilter && !priorLegOk(candles, first, false, atrNow)) continue;
       candidates.push({
@@ -573,7 +577,7 @@ export function backtestStochReversal(
       if (st === null || st < OVERBOUGHT) continue;
       if (filters.divergenceFilter) {
         const stFirst = stochNearIndex(stoch, first.index, true);
-        if (stFirst !== null && st >= stFirst) continue;
+        if (stFirst !== null && st >= stFirst + DIVERGENCE_TOLERANCE) continue;
       }
       if (filters.trendFilter && !priorLegOk(candles, first, true, atrHere)) continue;
       candidates.push({
@@ -602,7 +606,7 @@ export function backtestStochReversal(
       if (st === null || st > OVERSOLD) continue;
       if (filters.divergenceFilter) {
         const stFirst = stochNearIndex(stoch, first.index, false);
-        if (stFirst !== null && st <= stFirst) continue;
+        if (stFirst !== null && st <= stFirst - DIVERGENCE_TOLERANCE) continue;
       }
       if (filters.trendFilter && !priorLegOk(candles, first, false, atrHere)) continue;
       candidates.push({
