@@ -107,6 +107,24 @@ function priorLegOk(candles: Candle[], first: { price: number; index: number }, 
   return leg >= MIN_TREND_LEG_ATR * atrHere;
 }
 
+/** The stochastic tagged the pattern's extreme at some point between the second
+ * extreme (with the same window used to qualify it) and the engulfing bar, and is
+ * not sitting at the opposite extreme on the engulfing bar itself. */
+function stochHoldsExtreme(
+  stoch: (number | null)[],
+  secondIndex: number,
+  engulfIndex: number,
+  bearish: boolean,
+): boolean {
+  const kNow = stoch[engulfIndex];
+  if (kNow !== null && (bearish ? kNow <= OVERSOLD : kNow >= OVERBOUGHT)) return false;
+  for (let j = Math.max(0, secondIndex - STOCH_WINDOW_BARS); j <= engulfIndex; j++) {
+    const k = stoch[j];
+    if (k !== null && (bearish ? k >= OVERBOUGHT : k <= OVERSOLD)) return true;
+  }
+  return false;
+}
+
 /** A reversal candle whose body engulfs the previous bar's opposite-coloured body. */
 function isEngulfing(prev: Candle, cur: Candle, bearish: boolean): boolean {
   return bearish
@@ -301,12 +319,7 @@ export function detectStochReversalSetup(
       const cc = candles[i];
       if (bearish ? cc.close > stopLoss : cc.close < stopLoss) break; // died before triggering — the main loop reports it
       if (!isEngulfing(candles[i - 1], cc, bearish)) continue;
-      const kE = stoch[i];
-      const kP = stoch[i - 1];
-      const atExtreme =
-        (kE !== null && (bearish ? kE >= OVERBOUGHT : kE <= OVERSOLD)) ||
-        (kP !== null && (bearish ? kP >= OVERBOUGHT : kP <= OVERSOLD));
-      if (!atExtreme) continue;
+      if (!stochHoldsExtreme(stoch, cand.second.index, i, bearish)) continue;
       const eClose = cc.close;
       const eRisk = Math.abs(eClose - stopLoss);
       const eSpent = bearish ? eClose <= spentLevel : eClose >= spentLevel;
@@ -646,12 +659,7 @@ export function backtestStochReversal(
       for (let i = cand.second.index + 1; i <= lastE; i++) {
         if (bearish ? candles[i].close > stopLoss : candles[i].close < stopLoss) break;
         if (!isEngulfing(candles[i - 1], candles[i], bearish)) continue;
-        const kE = stoch[i];
-        const kP = stoch[i - 1];
-        const atExtreme =
-          (kE !== null && (bearish ? kE >= OVERBOUGHT : kE <= OVERSOLD)) ||
-          (kP !== null && (bearish ? kP >= OVERBOUGHT : kP <= OVERSOLD));
-        if (!atExtreme) continue;
+        if (!stochHoldsExtreme(stoch, cand.second.index, i, bearish)) continue;
         const eIdx = Math.max(i, detectIdx);
         if (eIdx >= n) break;
         let deadE = false;

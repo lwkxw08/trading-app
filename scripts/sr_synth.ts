@@ -177,3 +177,21 @@ for (let k = 0; k < 25; k++) {
 }
 show("engulfing entry completed at TP", engDone, "both");
 show("engulfing entry, mirrored double bottom", mirror(eng), "both");
+
+// a later engulfing candle (5 bars after the second top) where the stochastic has
+// already slipped off the extreme: the extreme was tagged at the pattern, so it
+// still confirms — only the wrong-side case is blocked
+const engLate = candles.slice(0, marks.awaiting).map((cd) => ({ ...cd }));
+engLate[83] = c(83, 108.9, 109.3);
+engLate[84] = c(84, 109.4, 108.6);
+show("late engulfing after the stoch left the extreme (both)", engLate, "both");
+show("late engulfing, mirrored double bottom", mirror(engLate), "both");
+
+// an engulfing candle after price has dumped so hard the stochastic sits at the
+// OPPOSITE extreme (oversold on a double top): wrong side — must not confirm
+const engWrong = candles.slice(0, marks.awaiting).map((cd) => ({ ...cd }));
+engWrong[80] = c(80, 109.8, 107);
+engWrong[81] = c(81, 107, 105.4);
+engWrong[82] = c(82, 105.4, 105.7);
+engWrong[83] = c(83, 105.8, 105.3);
+show("wrong-side engulfing (stoch dumped to oversold) rejected", engWrong, "both");

@@ -35,7 +35,7 @@ async function main() {
     "table.new",
     "plotshape(buySignal",
     "plotshape(sellSignal",
-    "[v7]",
+    "[v8]",
     "wrongSide",
     "maxConsumed",
     "spentLevel",
