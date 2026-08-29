@@ -195,3 +195,39 @@ engWrong[82] = c(82, 107, 105.4);
 engWrong[83] = c(83, 105.4, 105.6);
 engWrong[84] = c(84, 105.7, 105.2);
 show("wrong-side engulfing (stoch dumped to oversold) rejected", engWrong, "both");
+
+// a "double bottom" whose interim bounce is a full rally far above every high
+// preceding the first low: the decline into the second touch is a fresh
+// downtrend leg, not a W-retest — the neckline-within-structure check must
+// reject it even though the level, reversal candle and oversold stoch all match
+const wShape: Candle[] = [];
+{
+  let j = 0;
+  // flat range ~100
+  for (; j < 30; j++) wShape.push(c(j, 100, 100.2));
+  // first low: distinct wick to 99.0
+  wShape.push(c(j++, 100.2, 99.8, undefined, 99.0));
+  for (; j < 40; j++) wShape.push(c(j, 100, 100.2));
+  // huge rally 100 -> 120 — the interim "neckline" ends far above the range
+  let p = 100.2;
+  for (let k = 0; k < 20; k++, j++) {
+    // distinct wick on the last rally bar so the top confirms as a swing high
+    wShape.push(k === 19 ? c(j, p, p + 1, p + 2) : c(j, p, p + 1));
+    p += 1;
+  }
+  // drift confirms the rally top as the interim swing high
+  for (let k = 0; k < 5; k++, j++) {
+    wShape.push(c(j, p, p - 0.4));
+    p -= 0.4;
+  }
+  // fresh downtrend back to the old low's level
+  for (let k = 0; k < 14; k++, j++) {
+    wShape.push(c(j, p, p - 1.3));
+    p -= 1.3;
+  }
+  // red bar tags the old low, then a bullish reversal candle with stoch oversold
+  wShape.push(c(j++, p, p - 0.8, undefined, 98.9));
+  p -= 0.8;
+  wShape.push(c(j++, p, p + 1.0));
+}
+show("fresh downtrend re-tagging an old low (no W-shape) rejected", wShape, "both");

@@ -111,6 +111,25 @@ function priorLegOk(candles: Candle[], first: { price: number; index: number }, 
   return leg >= MIN_TREND_LEG_ATR * atrHere;
 }
 
+/** W-shape check: the interim neckline must stay within the structure that
+ * preceded the first extreme. For a double bottom, if the bounce between the
+ * two lows rallies above every high of the window before the first low, the
+ * decline into the second low is a fresh trend leg — not a retest of a
+ * double-bottom base (mirror for tops). */
+function necklineWithinStructure(
+  candles: Candle[],
+  first: { price: number; index: number },
+  neckline: number,
+  bearish: boolean,
+): boolean {
+  const from = Math.max(0, first.index - TREND_LOOKBACK_BARS);
+  let ext = bearish ? Infinity : -Infinity;
+  for (let j = from; j <= first.index; j++) {
+    ext = bearish ? Math.min(ext, candles[j].low) : Math.max(ext, candles[j].high);
+  }
+  return bearish ? neckline >= ext : neckline <= ext;
+}
+
 /** The stochastic tagged the pattern's extreme at some point between the second
  * extreme (with the same window used to qualify it) and the engulfing bar, and is
  * not sitting at the opposite extreme on the engulfing bar itself. */
@@ -251,6 +270,7 @@ function findSecondTouchTriggers(
         const between = necks.filter((s) => s.index > first.index && s.index + SWING_LOOKBACK <= i);
         if (between.length === 0) continue;
         const neckline = bearish ? Math.min(...between.map((s) => s.price)) : Math.max(...between.map((s) => s.price));
+        if (!necklineWithinStructure(candles, first, neckline, bearish)) continue;
         const touchExtreme = bearish
           ? Math.max(candles[i].high, candles[i - 1].high)
           : Math.min(candles[i].low, candles[i - 1].low);
@@ -338,6 +358,7 @@ export function detectStochReversalSetup(
       const between = lows.filter((l) => l.index > first.index && l.index < second.index);
       if (between.length === 0) continue;
       const neckline = Math.min(...between.map((l) => l.price));
+      if (!necklineWithinStructure(candles, first, neckline, true)) continue;
       if (Math.max(first.price, second.price) - neckline < MIN_HEIGHT_ATR * atrNow) continue;
       const st = stochNearIndex(stoch, second.index, true);
       if (st === null || st < OVERBOUGHT) continue;
@@ -369,6 +390,7 @@ export function detectStochReversalSetup(
       const between = highs.filter((h) => h.index > first.index && h.index < second.index);
       if (between.length === 0) continue;
       const neckline = Math.max(...between.map((h) => h.price));
+      if (!necklineWithinStructure(candles, first, neckline, false)) continue;
       if (neckline - Math.min(first.price, second.price) < MIN_HEIGHT_ATR * atrNow) continue;
       const st = stochNearIndex(stoch, second.index, false);
       if (st === null || st > OVERSOLD) continue;
@@ -728,6 +750,7 @@ export function backtestStochReversal(
       const between = lows.filter((l) => l.index > first.index && l.index < second.index);
       if (between.length === 0) continue;
       const neckline = Math.min(...between.map((l) => l.price));
+      if (!necklineWithinStructure(candles, first, neckline, true)) continue;
       if (Math.max(first.price, second.price) - neckline < MIN_HEIGHT_ATR * atrHere) continue;
       const st = stochNearIndex(stoch, second.index, true);
       if (st === null || st < OVERBOUGHT) continue;
@@ -757,6 +780,7 @@ export function backtestStochReversal(
       const between = highs.filter((h) => h.index > first.index && h.index < second.index);
       if (between.length === 0) continue;
       const neckline = Math.max(...between.map((h) => h.price));
+      if (!necklineWithinStructure(candles, first, neckline, false)) continue;
       if (neckline - Math.min(first.price, second.price) < MIN_HEIGHT_ATR * atrHere) continue;
       const st = stochNearIndex(stoch, second.index, false);
       if (st === null || st > OVERSOLD) continue;

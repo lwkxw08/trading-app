@@ -35,7 +35,9 @@ async function main() {
     "table.new",
     "plotshape(buySignal",
     "plotshape(sellSignal",
-    "[v11]",
+    "[v12]",
+  "botALeg",
+  "topALeg",
   "kRecentLow",
   "kRecentHigh",
   "wrongNow",
@@ -91,7 +93,8 @@ async function main() {
         if (reward / risk < 1.49) throw new Error("RR below minimum");
         if (t.entryTime >= t.exitTime) throw new Error("exit not after entry");
         if (t.confirmationTime > t.entryTime) throw new Error("entry before confirmation");
-        if (t.secondExtremeTime >= t.confirmationTime) throw new Error("confirmation before pattern");
+        // second-touch trades confirm on the touch bar itself, so equality is valid
+        if (t.secondExtremeTime > t.confirmationTime) throw new Error("confirmation before pattern");
         if (mode === "retest" && t.entryKind !== "retest") throw new Error("retest mode produced a non-retest entry");
         if (mode === "breakout" && t.entryKind === "retest") throw new Error("breakout mode produced a retest entry");
         if (t.entryKind === "breakout" && t.entryTime !== t.confirmationTime) throw new Error("breakout entry not at confirmation bar");

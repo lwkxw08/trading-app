@@ -308,7 +308,7 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
-const STOCH_REVERSAL_PINE_BUILD = "v11";
+const STOCH_REVERSAL_PINE_BUILD = "v12";
 
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -376,7 +376,11 @@ kAtExtreme(int o, int extOff, int d) =>
     for j = o to extOff + stochWindow
         ok := ok or (d == -1 ? nz(stochK[j], 0) >= obLevel : nz(stochK[j], 100) <= osLevel)
     ok and not wrongSideNow
-// prior leg into a just-confirmed pivot: the range of the lookback window ending at the extreme bar
+// prior leg into a just-confirmed pivot: the range of the lookback window ending at the extreme bar.
+// The window's opposite extreme also bounds the interim neckline (W-shape check):
+// if the bounce between two lows rallies above every high preceding the first
+// low, the decline into the second touch is a fresh trend leg, not a
+// double-bottom retest (mirror for tops).
 legLowIntoPivot  = ta.lowest(low, trendLookback)[pivotLen]
 legHighIntoPivot = ta.highest(high, trendLookback)[pivotLen]
 
@@ -406,7 +410,7 @@ bool patternFormed = false
 
 // a newer qualifying pattern supersedes any unfilled setup (only an open trade is protected)
 if not na(ph)
-    if state != 3 and not na(topA) and not na(neckLow) and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel and (not useDivergence or kNearHigh < topAK + divTolerance) and (not useTrendLeg or topALeg >= trendLegAtr * atrValue)
+    if state != 3 and not na(topA) and not na(neckLow) and neckLow >= topA - topALeg and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel and (not useDivergence or kNearHigh < topAK + divTolerance) and (not useTrendLeg or topALeg >= trendLegAtr * atrValue)
         dir := -1
         entry := neckLow
         patternHigh = math.max(ph, topA)
@@ -425,7 +429,7 @@ if not na(ph)
     neckLow := na
 
 if not na(pl)
-    if state != 3 and not na(botA) and not na(neckHigh) and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel and (not useDivergence or kNearLow > botAK - divTolerance) and (not useTrendLeg or botALeg >= trendLegAtr * atrValue)
+    if state != 3 and not na(botA) and not na(neckHigh) and neckHigh <= botA + botALeg and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel and (not useDivergence or kNearLow > botAK - divTolerance) and (not useTrendLeg or botALeg >= trendLegAtr * atrValue)
         dir := 1
         entry := neckHigh
         patternLow = math.min(pl, botA)
@@ -465,7 +469,7 @@ if (state == 1 or state == 2) and (bar_index - patternBar) > maxAgeBars
 kRecentLow  = ta.lowest(stochK, stochWindow + 1)
 kRecentHigh = ta.highest(stochK, stochWindow + 1)
 if useEngulf and entryMode != "retest" and state != 3
-    if not na(botA) and not na(neckHigh) and (bar_index - botABar) <= maxGapBars and (bar_index - botABar) > pivotLen
+    if not na(botA) and not na(neckHigh) and neckHigh <= botA + botALeg and (bar_index - botABar) <= maxGapBars and (bar_index - botABar) > pivotLen
         touchLowT = math.min(low, low[1])
         patternLowT = math.min(touchLowT, botA)
         heightT = neckHigh - patternLowT
@@ -483,7 +487,7 @@ if useEngulf and entryMode != "retest" and state != 3
                 patternBar := bar_index
                 buySignal := true
                 confirmed := true
-    if not buySignal and state != 3 and not na(topA) and not na(neckLow) and (bar_index - topABar) <= maxGapBars and (bar_index - topABar) > pivotLen
+    if not buySignal and state != 3 and not na(topA) and not na(neckLow) and neckLow >= topA - topALeg and (bar_index - topABar) <= maxGapBars and (bar_index - topABar) > pivotLen
         touchHighT = math.max(high, high[1])
         patternHighT = math.max(touchHighT, topA)
         heightT2 = patternHighT - neckLow
