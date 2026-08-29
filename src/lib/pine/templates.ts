@@ -417,10 +417,14 @@ if state == 1
         state := 2
         confirmed := true
 
+// hard gate at the signal bar: a SELL only fires with the stochastic overbought,
+// a BUY only with it oversold — a retest without the stochastic extreme is skipped
+stochGateOk = dir == -1 ? stochK >= obLevel : stochK <= osLevel
+
 if state == 2 and not confirmed // don't act on the confirmation bar itself
     if dir == -1 ? close > sl : close < sl
         state := 0 // closed beyond the stop before entry
-    else if high >= entry and low <= entry
+    else if high >= entry and low <= entry and stochGateOk
         sellSignal := dir == -1
         buySignal := dir == 1
         state := 3

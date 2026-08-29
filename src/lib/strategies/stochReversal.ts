@@ -269,9 +269,11 @@ export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup 
   // walk price action after confirmation: neckline retest triggers, stop-side
   // close invalidates, TP/SL hit after entry completes the setup
   let state: StochReversalState = "armed";
-  let stateDetail = `Reversal confirmed (${confirmation === "choch" ? "CHoCH" : "neckline break"}) — ${bearish ? "sell" : "buy"} the neckline retest`;
+  let stateDetail = `Reversal confirmed (${confirmation === "choch" ? "CHoCH" : "neckline break"}) — ${bearish ? "sell" : "buy"} the neckline retest with the stochastic ${bearish ? "overbought (80+)" : "oversold (20-)"}`;
   for (let i = confIndex + 1; i < candles.length; i++) {
     const c = candles[i];
+    const k = stoch[i];
+    const stochGateOk = k !== null && (bearish ? k >= OVERBOUGHT : k <= OVERSOLD);
     if (state === "armed") {
       if (bearish ? c.close > stopLoss : c.close < stopLoss) {
         state = "invalidated";
@@ -279,13 +281,16 @@ export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup 
         break;
       }
       if (c.low <= entry && c.high >= entry) {
-        state = "triggered";
-        stateDetail = "Neckline retest tagged the entry";
-        continue;
+        if (stochGateOk) {
+          state = "triggered";
+          stateDetail = "Neckline retest tagged the entry with the stochastic at the extreme";
+          continue;
+        }
+        stateDetail = `Neckline retest reached, but the stochastic is not ${bearish ? "overbought (80+)" : "oversold (20-)"} — waiting for a valid retest`;
       }
       if (bearish ? c.low <= takeProfit : c.high >= takeProfit) {
         state = "invalidated";
-        stateDetail = "Price ran to the target without retesting the neckline — entry missed";
+        stateDetail = "Price ran to the target without a stochastic-qualified retest — entry missed";
         break;
       }
     } else if (state === "triggered") {
@@ -347,7 +352,8 @@ export interface StochReversalBacktest {
  * series, exactly as live detection resolves it: qualifying pattern (two
  * near-equal extremes, interim neckline, stochastic 80+/20- at the second),
  * reversal confirmation (neckline close-through or CHoCH), then the neckline
- * retest entry with SL beyond the extreme and the measured-move/min-R target.
+ * retest entry — only taken with the stochastic back at the extreme (80+/20-)
+ * — with SL beyond the extreme and the measured-move/min-R target.
  * No look-ahead: a pattern only becomes tradeable once its second swing has
  * confirmed (SWING_LOOKBACK bars later), so entries are never filled before
  * the pattern was knowable. One position at a time; a bar spanning both SL
@@ -470,7 +476,9 @@ export function backtestStochReversal(symbol: string, timeframe: Timeframe, cand
         noEntry = true;
         break;
       }
-      if (c.low <= entry && c.high >= entry && i >= detectIdx) {
+      const k = stoch[i];
+      const stochGateOk = k !== null && (bearish ? k >= OVERBOUGHT : k <= OVERSOLD);
+      if (c.low <= entry && c.high >= entry && stochGateOk && i >= detectIdx) {
         entryIdx = i;
         break;
       }
