@@ -332,6 +332,7 @@ minHeightAtr = input.float(1.0, "Min pattern height (ATR)", minval=0.1, step=0.1
 maxGapBars  = input.int(80, "Max bars between the two extremes", minval=5)
 bufAtr      = input.float(0.5, "SL buffer beyond the extreme (ATR)", minval=0.0, step=0.1)
 minRR       = input.float(${minRR}, "Minimum reward multiple (R)", minval=0.5, step=0.25)
+maxAgeBars  = input.int(120, "Cancel unfilled setups after (bars)", minval=10)
 
 // ── Stochastic + pivots ────────────────────────────────────────────────
 stochK = ta.sma(ta.stoch(close, high, low, stochLen), stochSmooth)
@@ -354,14 +355,16 @@ var float neckHigh = na
 // setup state: 0 idle · 1 pattern formed, awaiting confirmation · 2 armed (confirmed, awaiting retest) · 3 in trade
 var int state = 0
 var int dir = 0 // -1 short (double top), +1 long (double bottom)
+var int patternBar = na
 var float entry = na
 var float sl = na
 var float tp = na
 
 bool patternFormed = false
 
+// a newer qualifying pattern supersedes any unfilled setup (only an open trade is protected)
 if not na(ph)
-    if state == 0 and not na(topA) and not na(neckLow) and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel
+    if state != 3 and not na(topA) and not na(neckLow) and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel
         dir := -1
         entry := neckLow
         patternHigh = math.max(ph, topA)
@@ -370,13 +373,14 @@ if not na(ph)
         height = patternHigh - neckLow
         tp := math.min(entry - height, entry - minRR * riskDist0)
         state := 1
+        patternBar := bar_index
         patternFormed := true
     topA := ph
     topABar := bar_index - pivotLen
     neckLow := na
 
 if not na(pl)
-    if state == 0 and not na(botA) and not na(neckHigh) and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel
+    if state != 3 and not na(botA) and not na(neckHigh) and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel
         dir := 1
         entry := neckHigh
         patternLow = math.min(pl, botA)
@@ -385,6 +389,7 @@ if not na(pl)
         height = neckHigh - patternLow
         tp := math.max(entry + height, entry + minRR * riskDist0)
         state := 1
+        patternBar := bar_index
         patternFormed := true
     botA := pl
     botABar := bar_index - pivotLen
@@ -400,6 +405,10 @@ if not na(ph) and not na(botA)
 bool confirmed = false
 bool buySignal = false
 bool sellSignal = false
+
+// stale unfilled setups expire: the retest must come while the pattern is still fresh
+if (state == 1 or state == 2) and (bar_index - patternBar) > maxAgeBars
+    state := 0
 
 if state == 1
     if dir == -1 ? close > sl : close < sl
