@@ -24,7 +24,7 @@ import type { RiskSettings } from "@/lib/strategies/risk";
 import { describeStopRule, describeTargetRule } from "@/lib/strategies/risk";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
-import { backtestStochReversal, STOCH_REVERSAL_STRATEGY_NAME, type StochReversalBacktest } from "@/lib/strategies/stochReversal";
+import { backtestStochReversal, DEFAULT_STOCH_REVERSAL_FILTERS, STOCH_REVERSAL_STRATEGY_NAME, type StochReversalBacktest, type StochReversalEntryMode, type StochReversalFilters } from "@/lib/strategies/stochReversal";
 
 // Backtests run in the browser: the server only supplies candle history
 // (pure I/O), so long simulations never hit the host's per-request CPU limit.
@@ -213,6 +213,8 @@ export default function BacktestPage() {
   const [srSymbol, setSrSymbol] = useState("BTCUSDT");
   const [srTf, setSrTf] = useState<Timeframe>("1h");
   const [srBars, setSrBars] = useState(1500);
+  const [srEntryMode, setSrEntryMode] = useState<StochReversalEntryMode>("both");
+  const [srFilters, setSrFilters] = useState<StochReversalFilters>(DEFAULT_STOCH_REVERSAL_FILTERS);
   const [srResult, setSrResult] = useState<StochReversalBacktest | null>(null);
   const [srLoading, setSrLoading] = useState(false);
   const [srError, setSrError] = useState<string | null>(null);
@@ -225,11 +227,11 @@ export default function BacktestPage() {
     fetchHistory(sym, srTf, srBars)
       .then((h) => {
         if (h.candles.length < 200) throw new Error("not enough history for this symbol/timeframe");
-        setSrResult(backtestStochReversal(sym, srTf, h.candles));
+        setSrResult(backtestStochReversal(sym, srTf, h.candles, srEntryMode, srFilters));
       })
       .catch((e) => setSrError(e instanceof Error ? e.message : "backtest failed"))
       .finally(() => setSrLoading(false));
-  }, [srSymbol, srTf, srBars]);
+  }, [srSymbol, srTf, srBars, srEntryMode, srFilters]);
 
   useEffect(() => {
     setSavedRuns(loadRuns());
@@ -1159,9 +1161,12 @@ export default function BacktestPage() {
             <p className="mt-1 text-xs text-muted">
               Replays the dedicated detector exactly like live detection: double top/bottom (two near-equal extremes)
               with the slow stochastic 80+/20- at the second one → reversal confirmation (neckline close-through or
-              CHoCH) → entry on the neckline retest only while the stochastic is at the extreme (80+ for sells,
-              20- for buys) → SL beyond the pattern extreme with ATR room → measured-move TP
-              (min 1.5R). No look-ahead: patterns only count once their second swing was confirmable; a bar spanning
+              CHoCH) → entry per the chosen mode: the neckline retest only while the stochastic is at the extreme
+              (80+ for sells, 20- for buys), and/or the confirmation-bar close (breakout — catches vertical moves
+              that never retest; skipped when price already reached the measured target) → SL beyond the pattern
+              extreme with ATR room → measured-move TP (min 1.5R). Quality filters (toggle to compare): a prior trend
+              leg into the pattern, stochastic divergence at the second extreme, and a decisive neckline break.
+              No look-ahead: patterns only count once their second swing was confirmable; a bar spanning
               both SL and TP counts as a stop.
             </p>
             <div className="mt-2 flex flex-wrap items-end gap-3 text-sm">
@@ -1181,6 +1186,47 @@ export default function BacktestPage() {
                   ))}
                 </select>
               </label>
+              <label className="block">
+                <span className="text-xs text-muted">Entry mode</span>
+                <select
+                  value={srEntryMode}
+                  onChange={(e) => setSrEntryMode(e.target.value as StochReversalEntryMode)}
+                  className={`${inputCls} mt-1 block`}
+                >
+                  <option value="both">Breakout, else retest</option>
+                  <option value="retest">Neckline retest only</option>
+                  <option value="breakout">Breakout only</option>
+                </select>
+              </label>
+              <div className="block text-xs">
+                <span className="text-muted">Quality filters</span>
+                <div className="mt-1 flex flex-wrap gap-3">
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={srFilters.trendFilter}
+                      onChange={(e) => setSrFilters({ ...srFilters, trendFilter: e.target.checked })}
+                    />
+                    Prior trend leg
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={srFilters.divergenceFilter}
+                      onChange={(e) => setSrFilters({ ...srFilters, divergenceFilter: e.target.checked })}
+                    />
+                    Stoch divergence
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={srFilters.decisiveBreak}
+                      onChange={(e) => setSrFilters({ ...srFilters, decisiveBreak: e.target.checked })}
+                    />
+                    Decisive break
+                  </label>
+                </div>
+              </div>
               <label className="block">
                 <span className="text-xs text-muted">History: {srBars} bars</span>
                 <input
@@ -1218,7 +1264,7 @@ export default function BacktestPage() {
                     <p className="font-semibold">{srResult.unconfirmed}</p>
                   </div>
                   <div className="rounded-md border border-edge p-2">
-                    <p className="text-muted">No retest</p>
+                    <p className="text-muted">No entry</p>
                     <p className="font-semibold">{srResult.missed}</p>
                   </div>
                   <div className="rounded-md border border-edge p-2">
@@ -1265,7 +1311,7 @@ export default function BacktestPage() {
                             <td className={`py-1 pr-3 font-semibold ${t.direction === "bullish" ? "text-bull" : "text-bear"}`}>
                               {t.pattern === "double_bottom" ? "DBL BOTTOM · LONG" : "DBL TOP · SHORT"}
                             </td>
-                            <td className="py-1 pr-3 uppercase">{t.confirmation.replace(/_/g, " ")}</td>
+                            <td className="py-1 pr-3 uppercase">{t.confirmation.replace(/_/g, " ")} · {t.entryKind}</td>
                             <td className="py-1 pr-3 font-mono">{fmtPrice(t.entry)}</td>
                             <td className="py-1 pr-3 font-mono">{fmtPrice(t.exitPrice)}</td>
                             <td className="py-1 pr-3 uppercase">{t.exitReason}</td>

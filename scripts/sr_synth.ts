@@ -1,5 +1,9 @@
-import { detectStochReversalSetup, stochReversalOpportunity, stochReversalWatchItem, stochasticK } from "../src/lib/strategies/stochReversal";
+import { detectStochReversalSetup, stochReversalOpportunity, stochReversalWatchItem, stochasticK, type StochReversalEntryMode, type StochReversalFilters } from "../src/lib/strategies/stochReversal";
 import type { Candle } from "../src/lib/market/types";
+
+// state-machine scenarios run with the quality filters off so the synthetic
+// series only has to exercise the pattern/confirmation/entry sequencing
+const FILTERS_OFF: StochReversalFilters = { trendFilter: false, divergenceFilter: false, decisiveBreak: false };
 
 // Synthetic double-top scenario, staged:
 // uptrend -> peak1 ~110 -> trough ~105 (neckline) -> peak2 ~110.1 (stoch overbought)
@@ -103,14 +107,14 @@ function mirror(candles: Candle[]): Candle[] {
   }));
 }
 
-function show(label: string, candles: Candle[]) {
-  const s = detectStochReversalSetup(candles);
+function show(label: string, candles: Candle[], mode: StochReversalEntryMode = "retest") {
+  const s = detectStochReversalSetup(candles, mode, FILTERS_OFF);
   if (!s) {
     console.log(`${label}: null`);
     return;
   }
   console.log(
-    `${label}: ${s.pattern ?? "-"} ${s.direction ?? "-"} state=${s.state} conf=${s.confirmation ?? "-"} stoch=${s.stochAtSecond?.toFixed(1) ?? "-"} entry=${s.entry?.toFixed(2) ?? "-"} sl=${s.stopLoss?.toFixed(2) ?? "-"} tp=${s.takeProfit?.toFixed(2) ?? "-"}`,
+    `${label}: ${s.pattern ?? "-"} ${s.direction ?? "-"} state=${s.state} conf=${s.confirmation ?? "-"} entryKind=${s.entryKind ?? "-"} stoch=${s.stochAtSecond?.toFixed(1) ?? "-"} entry=${s.entry?.toFixed(2) ?? "-"} sl=${s.stopLoss?.toFixed(2) ?? "-"} tp=${s.takeProfit?.toFixed(2) ?? "-"}`,
   );
   console.log(`   detail: ${s.stateDetail}`);
   const watch = stochReversalWatchItem("TEST", "1h", s);
@@ -145,3 +149,12 @@ show("armed", m.slice(0, marks.armed));
 show("gated retest (stoch not oversold => buy blocked, still armed)", m.slice(0, marks.gated));
 show("triggered (stoch oversold at retest)", m.slice(0, marks.triggered));
 show("completed", m.slice(0, marks.completed));
+
+console.log("--- breakout entry mode ---");
+// in "both"/"breakout" mode the entry is the confirmation-bar close itself: the
+// setup goes straight to triggered with the TP recomputed from that entry
+show("breakout entry at confirmation close (both)", candles.slice(0, marks.armed), "both");
+show("breakout entry at confirmation close (breakout)", candles.slice(0, marks.armed), "breakout");
+show("breakout completed after TP", candles.slice(0, marks.completed), "both");
+show("breakout entry, mirrored double bottom", m.slice(0, marks.armed), "both");
+show("retest-only mode still waits for the retest", candles.slice(0, marks.armed), "retest");

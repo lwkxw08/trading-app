@@ -308,7 +308,7 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
-const STOCH_REVERSAL_PINE_BUILD = "v4";
+const STOCH_REVERSAL_PINE_BUILD = "v5";
 
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -337,7 +337,13 @@ maxGapBars  = input.int(80, "Max bars between the two extremes", minval=5)
 bufAtr      = input.float(0.5, "SL buffer beyond the extreme (ATR)", minval=0.0, step=0.1)
 minRR       = input.float(${minRR}, "Minimum reward multiple (R)", minval=0.5, step=0.25)
 maxAgeBars  = input.int(120, "Cancel unfilled setups after (bars)", minval=10)
-strictGate  = input.bool(true, "Strict stochastic at entry (SELL needs 80+, BUY needs 20- on the signal bar)")
+strictGate  = input.bool(true, "Strict stochastic at retest entry (SELL needs 80+, BUY needs 20- on the signal bar)")
+entryMode   = input.string("both", "Entry mode", options=["retest", "breakout", "both"], tooltip="retest: enter on the neckline retest (stochastic-gated). breakout: enter at the close of the confirmation bar so vertical moves that never retest aren't missed (skipped when that close already reached the measured-move target; no stochastic gate — the pattern already required the extreme). both: breakout when viable, otherwise the retest.")
+useTrendLeg = input.bool(true, "Require a prior trend leg into the pattern", tooltip="The move into the first extreme must span at least the leg size below — filters range-bound double tops/bottoms that have nothing to reverse.")
+trendLegAtr = input.float(3.0, "Min prior leg into the first extreme (ATR)", minval=0.5, step=0.5)
+trendLookback = input.int(40, "Prior leg lookback (bars)", minval=10)
+useDivergence = input.bool(true, "Require stochastic divergence at the second extreme", tooltip="The stochastic at the second top must be below its value at the first top (mirror for bottoms) — the standard double-top quality filter.")
+breakMarginAtr = input.float(0.15, "Decisive neckline break margin (ATR)", minval=0.0, step=0.05, tooltip="The confirming close must clear the neckline by this margin — marginal squeaks through the neckline in chop are where most fakeouts come from. Set 0 to disable.")
 
 // ── Stochastic + pivots ────────────────────────────────────────────────
 stochK = ta.sma(ta.stoch(close, high, low, stochLen), stochSmooth)
@@ -347,14 +353,21 @@ pl = ta.pivotlow(low, pivotLen, pivotLen)
 // stochastic near the pivot bar (a small window around the extreme)
 kNearHigh = math.max(nz(stochK[pivotLen - 1], 0), math.max(nz(stochK[pivotLen], 0), nz(stochK[pivotLen + 1], 0)))
 kNearLow  = math.min(nz(stochK[pivotLen - 1], 100), math.min(nz(stochK[pivotLen], 100), nz(stochK[pivotLen + 1], 100)))
+// prior leg into a just-confirmed pivot: the range of the lookback window ending at the extreme bar
+legLowIntoPivot  = ta.lowest(low, trendLookback)[pivotLen]
+legHighIntoPivot = ta.highest(high, trendLookback)[pivotLen]
 
 // ── Pattern tracking ───────────────────────────────────────────────────
 // previous swing high/low (potential first extreme) + the interim neckline
 var float topA = na
 var int   topABar = na
+var float topAK = na    // stochastic at the first top (for divergence)
+var float topALeg = na  // size of the move into the first top (for the trend filter)
 var float neckLow = na
 var float botA = na
 var int   botABar = na
+var float botAK = na
+var float botALeg = na
 var float neckHigh = na
 
 // setup state: 0 idle · 1 pattern formed, awaiting confirmation · 2 armed (confirmed, awaiting retest) · 3 in trade
@@ -364,40 +377,47 @@ var int patternBar = na
 var float entry = na
 var float sl = na
 var float tp = na
+var float measured = na // pure measured-move target (pattern height from the neckline)
 
 bool patternFormed = false
 
 // a newer qualifying pattern supersedes any unfilled setup (only an open trade is protected)
 if not na(ph)
-    if state != 3 and not na(topA) and not na(neckLow) and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel
+    if state != 3 and not na(topA) and not na(neckLow) and (bar_index - pivotLen - topABar) <= maxGapBars and math.abs(ph - topA) <= tolAtr * atrValue and math.max(ph, topA) - neckLow >= minHeightAtr * atrValue and kNearHigh >= obLevel and (not useDivergence or kNearHigh < topAK) and (not useTrendLeg or topALeg >= trendLegAtr * atrValue)
         dir := -1
         entry := neckLow
         patternHigh = math.max(ph, topA)
         sl := patternHigh + bufAtr * atrValue
         riskDist0 = sl - entry
         height = patternHigh - neckLow
-        tp := math.min(entry - height, entry - minRR * riskDist0)
+        measured := entry - height
+        tp := math.min(measured, entry - minRR * riskDist0)
         state := 1
         patternBar := bar_index
         patternFormed := true
     topA := ph
     topABar := bar_index - pivotLen
+    topAK := kNearHigh
+    topALeg := ph - legLowIntoPivot
     neckLow := na
 
 if not na(pl)
-    if state != 3 and not na(botA) and not na(neckHigh) and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel
+    if state != 3 and not na(botA) and not na(neckHigh) and (bar_index - pivotLen - botABar) <= maxGapBars and math.abs(pl - botA) <= tolAtr * atrValue and neckHigh - math.min(pl, botA) >= minHeightAtr * atrValue and kNearLow <= osLevel and (not useDivergence or kNearLow > botAK) and (not useTrendLeg or botALeg >= trendLegAtr * atrValue)
         dir := 1
         entry := neckHigh
         patternLow = math.min(pl, botA)
         sl := patternLow - bufAtr * atrValue
         riskDist0 = entry - sl
         height = neckHigh - patternLow
-        tp := math.max(entry + height, entry + minRR * riskDist0)
+        measured := entry + height
+        tp := math.max(measured, entry + minRR * riskDist0)
         state := 1
         patternBar := bar_index
         patternFormed := true
     botA := pl
     botABar := bar_index - pivotLen
+    botAK := kNearLow
+    botALeg := legHighIntoPivot - pl
     neckHigh := na
 
 // track the interim neckline between the two extremes
@@ -418,16 +438,30 @@ if (state == 1 or state == 2) and (bar_index - patternBar) > maxAgeBars
 if state == 1
     if dir == -1 ? close > sl : close < sl
         state := 0 // died beyond the stop level before confirming
-    else if dir == -1 ? close < entry : close > entry
-        state := 2
+    else if dir == -1 ? close < entry - breakMarginAtr * atrValue : close > entry + breakMarginAtr * atrValue
         confirmed := true
+        // breakout entry: take the confirmation close itself (no retest needed);
+        // the TP is recomputed from that entry — measured move, or the minimum R
+        // when nearer — and skipped when price already ran to the measured target
+        ranTooFar = dir == -1 ? close <= measured : close >= measured
+        breakoutRisk = math.abs(close - sl)
+        if entryMode != "retest" and not ranTooFar and breakoutRisk > 0
+            entry := close
+            tp := dir == -1 ? math.min(measured, close - minRR * breakoutRisk) : math.max(measured, close + minRR * breakoutRisk)
+            sellSignal := dir == -1
+            buySignal := dir == 1
+            state := 3
+        else if entryMode == "breakout"
+            state := 0 // price already reached the measured target — breakout entry skipped
+        else
+            state := 2
 
 // gate at the signal bar: a SELL only fires with the stochastic overbought and a
 // BUY only with it oversold; unticking strict mode relaxes this to only blocking
 // the opposite extreme (no sells while oversold, no buys while overbought)
 stochGateOk = strictGate ? (dir == -1 ? stochK >= obLevel : stochK <= osLevel) : (dir == -1 ? stochK > osLevel : stochK < obLevel)
 
-if state == 2 and not confirmed // don't act on the confirmation bar itself
+if state == 2 and not confirmed // retest entry: don't act on the confirmation bar itself
     if dir == -1 ? close > sl : close < sl
         state := 0 // closed beyond the stop before entry
     else if high >= entry and low <= entry and stochGateOk
@@ -478,8 +512,8 @@ if barstate.islast
 // ── Alerts ─────────────────────────────────────────────────────────────
 alertcondition(patternFormed, title="Pattern formed", message="${sanitize(cfg.name)}: double top/bottom with a stochastic extreme on {{ticker}} — awaiting reversal confirmation")
 alertcondition(confirmed, title="Reversal confirmed", message="${sanitize(cfg.name)}: reversal confirmed on {{ticker}} — watching for the neckline retest")
-alertcondition(buySignal,  title="Buy signal",  message="${sanitize(cfg.name)}: BUY {{ticker}} @ {{close}} (double bottom neckline retest)")
-alertcondition(sellSignal, title="Sell signal", message="${sanitize(cfg.name)}: SELL {{ticker}} @ {{close}} (double top neckline retest)")
+alertcondition(buySignal,  title="Buy signal",  message="${sanitize(cfg.name)}: BUY {{ticker}} @ {{close}} (double bottom entry)")
+alertcondition(sellSignal, title="Sell signal", message="${sanitize(cfg.name)}: SELL {{ticker}} @ {{close}} (double top entry)")
 `;
 }
 

@@ -14,10 +14,18 @@ export const STOCH_REVERSAL_STRATEGY_NAME = "Stochastic Double Top/Bottom";
  * 3. Confirmation: price action must show the reversal is in effect — a close
  *    through the neckline (the interim trough/peak) or a CHoCH against the
  *    prior move — before the setup is actionable,
- * 4. Levels: sell the neckline retest, SL just beyond the pattern extreme with
- *    an ATR buffer, TP at the measured move (pattern height projected from the
- *    neckline), extended to a minimum R multiple when the pattern is shallow.
+ * 4. Levels: sell the neckline retest — or, in breakout mode, the close of the
+ *    confirmation bar itself so vertical moves that never retest aren't missed
+ *    (skipped when that close already reached the measured-move target) — SL
+ *    just beyond the pattern extreme with an ATR buffer, TP at the measured
+ *    move (pattern height projected from the neckline), extended to a minimum
+ *    R multiple from the actual entry when the pattern is shallow.
  */
+
+/** How the confirmed setup is entered: the neckline retest, the confirmation-bar
+ * close (breakout), or the breakout when it offers enough R falling back to the
+ * retest otherwise. */
+export type StochReversalEntryMode = "retest" | "breakout" | "both";
 
 export type StochReversalState =
   | "awaiting_pattern" // no qualifying double top/bottom with a stochastic extreme yet
@@ -46,6 +54,8 @@ export interface StochReversalSetup {
   entry: number | null;
   stopLoss: number | null;
   takeProfit: number | null;
+  /** how the entry was (or will be) taken once confirmed */
+  entryKind: "retest" | "breakout" | null;
   state: StochReversalState;
   stateDetail: string;
 }
@@ -61,6 +71,37 @@ const MAX_EXTREME_GAP_BARS = 80; // max bars between the two extremes
 const STOCH_WINDOW_BARS = 2; // stochastic extreme within +/- this of the second top/bottom
 const STOP_BUFFER_ATR = 0.5; // "some room" above/below the pattern extreme
 const MIN_RR = 1.5; // ensure a sensible R/R: at least this R when the measured move is nearer
+const TREND_LOOKBACK_BARS = 40; // window before the first extreme measured for the prior leg
+const MIN_TREND_LEG_ATR = 3; // the move into the first extreme must span at least this
+const BREAK_MARGIN_ATR = 0.15; // decisive neckline break: the close must clear it by this
+
+/** Quality filters that cut range-bound/chop patterns (all on by default). */
+export interface StochReversalFilters {
+  /** the pattern must cap a genuine prior trend leg into the first extreme */
+  trendFilter: boolean;
+  /** the stochastic must diverge at the second extreme (weaker momentum than the first) */
+  divergenceFilter: boolean;
+  /** the confirming close must clear the neckline by a margin, not squeak through */
+  decisiveBreak: boolean;
+}
+
+export const DEFAULT_STOCH_REVERSAL_FILTERS: StochReversalFilters = {
+  trendFilter: true,
+  divergenceFilter: true,
+  decisiveBreak: true,
+};
+
+/** The move into the first extreme: for a double top, the rise from the lowest
+ * low of the preceding window to the first peak (mirror for bottoms). */
+function priorLegOk(candles: Candle[], first: { price: number; index: number }, bearish: boolean, atrHere: number): boolean {
+  const from = Math.max(0, first.index - TREND_LOOKBACK_BARS);
+  let opposite = bearish ? Infinity : -Infinity;
+  for (let j = from; j <= first.index; j++) {
+    opposite = bearish ? Math.min(opposite, candles[j].low) : Math.max(opposite, candles[j].high);
+  }
+  const leg = bearish ? first.price - opposite : opposite - first.price;
+  return leg >= MIN_TREND_LEG_ATR * atrHere;
+}
 
 /** Slow stochastic %K: raw %K smoothed with an SMA. */
 export function stochasticK(candles: Candle[], period = STOCH_PERIOD, smooth = STOCH_SMOOTH): (number | null)[] {
@@ -98,6 +139,7 @@ function base(state: StochReversalState, stateDetail: string, partial?: Partial<
     entry: null,
     stopLoss: null,
     takeProfit: null,
+    entryKind: null,
     state,
     stateDetail,
     ...partial,
@@ -123,7 +165,11 @@ function stochNearIndex(stoch: (number | null)[], index: number, wantHigh: boole
   return best;
 }
 
-export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup | null {
+export function detectStochReversalSetup(
+  candles: Candle[],
+  entryMode: StochReversalEntryMode = "both",
+  filters: StochReversalFilters = DEFAULT_STOCH_REVERSAL_FILTERS,
+): StochReversalSetup | null {
   if (candles.length < 80) return null;
 
   const atr14 = atr(candles, 14);
@@ -151,6 +197,11 @@ export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup 
       if (Math.max(first.price, second.price) - neckline < MIN_HEIGHT_ATR * atrNow) continue;
       const st = stochNearIndex(stoch, second.index, true);
       if (st === null || st < OVERBOUGHT) continue;
+      if (filters.divergenceFilter) {
+        const stFirst = stochNearIndex(stoch, first.index, true);
+        if (stFirst !== null && st >= stFirst) continue;
+      }
+      if (filters.trendFilter && !priorLegOk(candles, first, true, atrNow)) continue;
       candidates.push({
         pattern: "double_top",
         direction: "bearish",
@@ -177,6 +228,11 @@ export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup 
       if (neckline - Math.min(first.price, second.price) < MIN_HEIGHT_ATR * atrNow) continue;
       const st = stochNearIndex(stoch, second.index, false);
       if (st === null || st > OVERSOLD) continue;
+      if (filters.divergenceFilter) {
+        const stFirst = stochNearIndex(stoch, first.index, false);
+        if (stFirst !== null && st <= stFirst) continue;
+      }
+      if (filters.trendFilter && !priorLegOk(candles, first, false, atrNow)) continue;
       candidates.push({
         pattern: "double_bottom",
         direction: "bullish",
@@ -225,6 +281,7 @@ export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup 
   // neckline, or a CHoCH in the reversal direction
   const breaks = detectStructureBreaks(candles, swings);
   const choch = breaks.find((br) => br.type === "choch" && br.direction === cand.direction && br.index > cand.second.index);
+  const breakMargin = filters.decisiveBreak ? BREAK_MARGIN_ATR * atrNow : 0;
   let confIndex = -1;
   let confirmation: "neckline_break" | "choch" | null = null;
   for (let i = cand.second.index + 1; i < candles.length; i++) {
@@ -237,7 +294,7 @@ export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup 
         patternInfo,
       );
     }
-    if (bearish ? c.close < cand.neckline : c.close > cand.neckline) {
+    if (bearish ? c.close < cand.neckline - breakMargin : c.close > cand.neckline + breakMargin) {
       confIndex = i;
       confirmation = "neckline_break";
       break;
@@ -257,14 +314,53 @@ export function detectStochReversalSetup(candles: Candle[]): StochReversalSetup 
     );
   }
 
+  // breakout entry: take the confirmation-bar close itself — the TP is then
+  // recomputed from that entry (measured move, or the minimum R when nearer)
+  // and the entry is skipped when price already ran to the measured target
+  const confClose = candles[confIndex].close;
+  const ranTooFar = bearish ? confClose <= measured : confClose >= measured;
+  const breakoutRisk = Math.abs(confClose - stopLoss);
+  const useBreakout = entryMode !== "retest" && !ranTooFar && breakoutRisk > 0;
+  const breakoutTp = bearish
+    ? Math.min(measured, confClose - MIN_RR * breakoutRisk)
+    : Math.max(measured, confClose + MIN_RR * breakoutRisk);
+
   const levels: Partial<StochReversalSetup> = {
     ...patternInfo,
     confirmation,
     confirmationTime: candles[confIndex].time,
-    entry,
+    entry: useBreakout ? confClose : entry,
     stopLoss,
-    takeProfit,
+    takeProfit: useBreakout ? breakoutTp : takeProfit,
+    entryKind: useBreakout ? "breakout" : "retest",
   };
+
+  if (useBreakout) {
+    let state: StochReversalState = "triggered";
+    let stateDetail = `Entered at the ${confirmation === "choch" ? "CHoCH" : "neckline break"} close (breakout entry)`;
+    for (let i = confIndex + 1; i < candles.length; i++) {
+      const c = candles[i];
+      if (bearish ? c.low <= breakoutTp : c.high >= breakoutTp) {
+        state = "completed";
+        stateDetail = "Setup played out — take profit was reached";
+        break;
+      }
+      if (bearish ? c.high >= stopLoss : c.low <= stopLoss) {
+        state = "completed";
+        stateDetail = "Setup played out — stop level was reached after entry";
+        break;
+      }
+    }
+    return base(state, stateDetail, levels);
+  }
+
+  if (entryMode === "breakout") {
+    return base(
+      "invalidated",
+      "Price already reached the measured-move target at confirmation — breakout entry skipped",
+      levels,
+    );
+  }
 
   // walk price action after confirmation: neckline retest triggers, stop-side
   // close invalidates, TP/SL hit after entry completes the setup
@@ -319,6 +415,7 @@ export interface StochReversalTrade {
   secondExtremeTime: number;
   confirmation: "neckline_break" | "choch";
   confirmationTime: number;
+  entryKind: "retest" | "breakout";
   entry: number;
   stopLoss: number;
   takeProfit: number;
@@ -352,16 +449,23 @@ export interface StochReversalBacktest {
  * Replay the stochastic double top/bottom strategy over a single candle
  * series, exactly as live detection resolves it: qualifying pattern (two
  * near-equal extremes, interim neckline, stochastic 80+/20- at the second),
- * reversal confirmation (neckline close-through or CHoCH), then the neckline
- * retest entry — only taken with the stochastic back at the extreme (80+ for
- * sells, 20- for buys) — with SL beyond the extreme and the
- * measured-move/min-R target.
+ * reversal confirmation (neckline close-through or CHoCH), then the entry per
+ * the chosen mode: the neckline retest — only taken with the stochastic back
+ * at the extreme (80+ for sells, 20- for buys) — and/or the confirmation-bar
+ * close (breakout, skipped when it offers under the minimum R) — with SL
+ * beyond the extreme and the measured-move/min-R target.
  * No look-ahead: a pattern only becomes tradeable once its second swing has
  * confirmed (SWING_LOOKBACK bars later), so entries are never filled before
  * the pattern was knowable. One position at a time; a bar spanning both SL
  * and TP counts as a stop (conservative).
  */
-export function backtestStochReversal(symbol: string, timeframe: Timeframe, candles: Candle[]): StochReversalBacktest {
+export function backtestStochReversal(
+  symbol: string,
+  timeframe: Timeframe,
+  candles: Candle[],
+  entryMode: StochReversalEntryMode = "both",
+  filters: StochReversalFilters = DEFAULT_STOCH_REVERSAL_FILTERS,
+): StochReversalBacktest {
   const n = candles.length;
   const atr14 = atr(candles, 14);
   const stoch = stochasticK(candles);
@@ -384,6 +488,11 @@ export function backtestStochReversal(symbol: string, timeframe: Timeframe, cand
       if (Math.max(first.price, second.price) - neckline < MIN_HEIGHT_ATR * atrHere) continue;
       const st = stochNearIndex(stoch, second.index, true);
       if (st === null || st < OVERBOUGHT) continue;
+      if (filters.divergenceFilter) {
+        const stFirst = stochNearIndex(stoch, first.index, true);
+        if (stFirst !== null && st >= stFirst) continue;
+      }
+      if (filters.trendFilter && !priorLegOk(candles, first, true, atrHere)) continue;
       candidates.push({
         pattern: "double_top",
         direction: "bearish",
@@ -408,6 +517,11 @@ export function backtestStochReversal(symbol: string, timeframe: Timeframe, cand
       if (neckline - Math.min(first.price, second.price) < MIN_HEIGHT_ATR * atrHere) continue;
       const st = stochNearIndex(stoch, second.index, false);
       if (st === null || st > OVERSOLD) continue;
+      if (filters.divergenceFilter) {
+        const stFirst = stochNearIndex(stoch, first.index, false);
+        if (stFirst !== null && st <= stFirst) continue;
+      }
+      if (filters.trendFilter && !priorLegOk(candles, first, false, atrHere)) continue;
       candidates.push({
         pattern: "double_bottom",
         direction: "bullish",
@@ -444,6 +558,7 @@ export function backtestStochReversal(symbol: string, timeframe: Timeframe, cand
     const choch = breaks.find((br) => br.type === "choch" && br.direction === cand.direction && br.index > cand.second.index);
 
     // confirmation: close through the neckline or a CHoCH in the reversal direction
+    const breakMargin = filters.decisiveBreak ? BREAK_MARGIN_ATR * atrHere : 0;
     let confIdx = -1;
     let confirmation: "neckline_break" | "choch" | null = null;
     let dead = false;
@@ -453,7 +568,7 @@ export function backtestStochReversal(symbol: string, timeframe: Timeframe, cand
         dead = true;
         break;
       }
-      if (bearish ? c.close < cand.neckline : c.close > cand.neckline) {
+      if (bearish ? c.close < cand.neckline - breakMargin : c.close > cand.neckline + breakMargin) {
         confIdx = i;
         confirmation = "neckline_break";
         break;
@@ -469,29 +584,50 @@ export function backtestStochReversal(symbol: string, timeframe: Timeframe, cand
       continue;
     }
 
-    // armed: wait for the neckline retest (only once the pattern was knowable)
+    // breakout entry at the confirmation close: only once the pattern was
+    // knowable, skipped when price already ran to the measured target; the TP
+    // is recomputed from the actual entry (measured move, or min R when nearer)
+    const confClose = candles[confIdx].close;
+    const ranTooFar = bearish ? confClose <= measured : confClose >= measured;
+    const breakoutRisk = Math.abs(confClose - stopLoss);
+    const useBreakout = entryMode !== "retest" && confIdx >= detectIdx && !ranTooFar && breakoutRisk > 0;
+
     let entryIdx = -1;
-    let noEntry = false;
-    for (let i = confIdx + 1; i < n; i++) {
-      const c = candles[i];
-      if (bearish ? c.close > stopLoss : c.close < stopLoss) {
-        noEntry = true;
-        break;
-      }
-      const k = stoch[i];
-      const stochGateOk = k !== null && (bearish ? k >= OVERBOUGHT : k <= OVERSOLD);
-      if (c.low <= entry && c.high >= entry && stochGateOk && i >= detectIdx) {
-        entryIdx = i;
-        break;
-      }
-      if (bearish ? c.low <= takeProfit : c.high >= takeProfit) {
-        noEntry = true;
-        break;
-      }
-    }
-    if (noEntry || entryIdx < 0) {
+    let entryPrice = entry;
+    let tpUsed = takeProfit;
+    let entryKind: "retest" | "breakout" = "retest";
+    if (useBreakout) {
+      entryIdx = confIdx;
+      entryPrice = confClose;
+      tpUsed = bearish ? Math.min(measured, confClose - MIN_RR * breakoutRisk) : Math.max(measured, confClose + MIN_RR * breakoutRisk);
+      entryKind = "breakout";
+    } else if (entryMode === "breakout") {
       missed++;
       continue;
+    } else {
+      // armed: wait for the neckline retest (only once the pattern was knowable)
+      let noEntry = false;
+      for (let i = confIdx + 1; i < n; i++) {
+        const c = candles[i];
+        if (bearish ? c.close > stopLoss : c.close < stopLoss) {
+          noEntry = true;
+          break;
+        }
+        const k = stoch[i];
+        const stochGateOk = k !== null && (bearish ? k >= OVERBOUGHT : k <= OVERSOLD);
+        if (c.low <= entry && c.high >= entry && stochGateOk && i >= detectIdx) {
+          entryIdx = i;
+          break;
+        }
+        if (bearish ? c.low <= takeProfit : c.high >= takeProfit) {
+          noEntry = true;
+          break;
+        }
+      }
+      if (noEntry || entryIdx < 0) {
+        missed++;
+        continue;
+      }
     }
 
     // in trade: SL checked before TP (conservative on bars spanning both)
@@ -502,8 +638,8 @@ export function backtestStochReversal(symbol: string, timeframe: Timeframe, cand
         exit = { index: i, price: stopLoss, reason: "sl" };
         break;
       }
-      if (bearish ? c.low <= takeProfit : c.high >= takeProfit) {
-        exit = { index: i, price: takeProfit, reason: "tp" };
+      if (bearish ? c.low <= tpUsed : c.high >= tpUsed) {
+        exit = { index: i, price: tpUsed, reason: "tp" };
         break;
       }
     }
@@ -512,20 +648,22 @@ export function backtestStochReversal(symbol: string, timeframe: Timeframe, cand
       continue;
     }
 
+    const tradeRisk = Math.abs(entryPrice - stopLoss);
     trades.push({
       pattern: cand.pattern,
       direction: cand.direction,
       secondExtremeTime: cand.second.time,
       confirmation,
       confirmationTime: candles[confIdx].time,
-      entry,
+      entryKind,
+      entry: entryPrice,
       stopLoss,
-      takeProfit,
+      takeProfit: tpUsed,
       entryTime: candles[entryIdx].time,
       exitTime: candles[exit.index].time,
       exitPrice: exit.price,
       exitReason: exit.reason,
-      rMultiple: exit.reason === "tp" ? Number((Math.abs(takeProfit - entry) / risk).toFixed(2)) : -1,
+      rMultiple: exit.reason === "tp" ? Number((Math.abs(tpUsed - entryPrice) / tradeRisk).toFixed(2)) : -1,
     });
     busyUntil = exit.index;
   }
