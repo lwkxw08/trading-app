@@ -308,7 +308,7 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
-const STOCH_REVERSAL_PINE_BUILD = "v5";
+const STOCH_REVERSAL_PINE_BUILD = "v6";
 
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -338,7 +338,7 @@ bufAtr      = input.float(0.5, "SL buffer beyond the extreme (ATR)", minval=0.0,
 minRR       = input.float(${minRR}, "Minimum reward multiple (R)", minval=0.5, step=0.25)
 maxAgeBars  = input.int(120, "Cancel unfilled setups after (bars)", minval=10)
 strictGate  = input.bool(true, "Strict stochastic at retest entry (SELL needs 80+, BUY needs 20- on the signal bar)")
-entryMode   = input.string("both", "Entry mode", options=["retest", "breakout", "both"], tooltip="retest: enter on the neckline retest (stochastic-gated). breakout: enter at the close of the confirmation bar so vertical moves that never retest aren't missed (skipped when that close already reached the measured-move target; no stochastic gate — the pattern already required the extreme). both: breakout when viable, otherwise the retest.")
+entryMode   = input.string("both", "Entry mode", options=["retest", "breakout", "both"], tooltip="retest: enter on the neckline retest (stochastic-gated). breakout: enter at the close of the confirmation bar so vertical moves that never retest aren't missed — skipped when that close already reached the measured-move target or the stochastic sits at the wrong extreme on that bar (no BUY while overbought, no SELL while oversold). both: breakout when viable, otherwise the retest.")
 useTrendLeg = input.bool(true, "Require a prior trend leg into the pattern", tooltip="The move into the first extreme must span at least the leg size below — filters range-bound double tops/bottoms that have nothing to reverse.")
 trendLegAtr = input.float(3.0, "Min prior leg into the first extreme (ATR)", minval=0.5, step=0.5)
 trendLookback = input.int(40, "Prior leg lookback (bars)", minval=10)
@@ -443,9 +443,11 @@ if state == 1
         // breakout entry: take the confirmation close itself (no retest needed);
         // the TP is recomputed from that entry — measured move, or the minimum R
         // when nearer — and skipped when price already ran to the measured target
+        // or the stochastic sits at the wrong extreme on the confirmation bar
         ranTooFar = dir == -1 ? close <= measured : close >= measured
         breakoutRisk = math.abs(close - sl)
-        if entryMode != "retest" and not ranTooFar and breakoutRisk > 0
+        wrongSide = dir == -1 ? stochK <= osLevel : stochK >= obLevel
+        if entryMode != "retest" and not ranTooFar and not wrongSide and breakoutRisk > 0
             entry := close
             tp := dir == -1 ? math.min(measured, close - minRR * breakoutRisk) : math.max(measured, close + minRR * breakoutRisk)
             sellSignal := dir == -1

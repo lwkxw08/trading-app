@@ -316,11 +316,14 @@ export function detectStochReversalSetup(
 
   // breakout entry: take the confirmation-bar close itself — the TP is then
   // recomputed from that entry (measured move, or the minimum R when nearer)
-  // and the entry is skipped when price already ran to the measured target
+  // and the entry is skipped when price already ran to the measured target or
+  // the stochastic sits at the wrong extreme on the confirmation bar
   const confClose = candles[confIndex].close;
   const ranTooFar = bearish ? confClose <= measured : confClose >= measured;
   const breakoutRisk = Math.abs(confClose - stopLoss);
-  const useBreakout = entryMode !== "retest" && !ranTooFar && breakoutRisk > 0;
+  const confK = stoch[confIndex];
+  const wrongSide = confK !== null && (bearish ? confK <= OVERSOLD : confK >= OVERBOUGHT);
+  const useBreakout = entryMode !== "retest" && !ranTooFar && !wrongSide && breakoutRisk > 0;
   const breakoutTp = bearish
     ? Math.min(measured, confClose - MIN_RR * breakoutRisk)
     : Math.max(measured, confClose + MIN_RR * breakoutRisk);
@@ -585,12 +588,15 @@ export function backtestStochReversal(
     }
 
     // breakout entry at the confirmation close: only once the pattern was
-    // knowable, skipped when price already ran to the measured target; the TP
+    // knowable, skipped when price already ran to the measured target or the
+    // stochastic sits at the wrong extreme on the confirmation bar; the TP
     // is recomputed from the actual entry (measured move, or min R when nearer)
     const confClose = candles[confIdx].close;
     const ranTooFar = bearish ? confClose <= measured : confClose >= measured;
     const breakoutRisk = Math.abs(confClose - stopLoss);
-    const useBreakout = entryMode !== "retest" && confIdx >= detectIdx && !ranTooFar && breakoutRisk > 0;
+    const confK = stoch[confIdx];
+    const wrongSide = confK !== null && (bearish ? confK <= OVERSOLD : confK >= OVERBOUGHT);
+    const useBreakout = entryMode !== "retest" && confIdx >= detectIdx && !ranTooFar && !wrongSide && breakoutRisk > 0;
 
     let entryIdx = -1;
     let entryPrice = entry;
