@@ -12,8 +12,9 @@ export const STOCH_REVERSAL_STRATEGY_NAME = "Stochastic Double Top/Bottom";
  * 2. Momentum: the slow stochastic is overbought (>= 80) at the second top
  *    (mirror: oversold <= 20 at the second bottom),
  * 3. Confirmation: price action must show the reversal is in effect — a close
- *    through the neckline (the interim trough/peak) or a CHoCH against the
- *    prior move — before the setup is actionable,
+ *    through the neckline (the interim trough/peak), a CHoCH against the
+ *    prior move, or an engulfing reversal candle right at the second extreme
+ *    while the stochastic is still there — before the setup is actionable,
  * 4. Levels: sell the neckline retest — or, in breakout mode, the close of the
  *    confirmation bar itself so vertical moves that never retest aren't missed
  *    (skipped when that close already reached the measured-move target) — SL
@@ -24,7 +25,8 @@ export const STOCH_REVERSAL_STRATEGY_NAME = "Stochastic Double Top/Bottom";
 
 /** How the confirmed setup is entered: the neckline retest, the confirmation-bar
  * close (breakout), or the breakout when it offers enough R falling back to the
- * retest otherwise. */
+ * retest otherwise. Outside retest mode, an engulfing reversal candle at the
+ * second extreme is an additional early trigger entered at its close. */
 export type StochReversalEntryMode = "retest" | "breakout" | "both";
 
 export type StochReversalState =
@@ -49,13 +51,13 @@ export interface StochReversalSetup {
   /** slow stochastic %K at the second top/bottom */
   stochAtSecond: number | null;
   /** what confirmed the reversal, once it has */
-  confirmation: "neckline_break" | "choch" | null;
+  confirmation: "neckline_break" | "choch" | "engulfing" | null;
   confirmationTime: number | null;
   entry: number | null;
   stopLoss: number | null;
   takeProfit: number | null;
   /** how the entry was (or will be) taken once confirmed */
-  entryKind: "retest" | "breakout" | null;
+  entryKind: "retest" | "breakout" | "engulfing" | null;
   state: StochReversalState;
   stateDetail: string;
 }
@@ -74,6 +76,8 @@ const MIN_RR = 1.5; // ensure a sensible R/R: at least this R when the measured 
 const TREND_LOOKBACK_BARS = 40; // window before the first extreme measured for the prior leg
 const MIN_TREND_LEG_ATR = 3; // the move into the first extreme must span at least this
 const BREAK_MARGIN_ATR = 0.15; // decisive neckline break: the close must clear it by this
+const BREAKOUT_MAX_CONSUMED = 0.5; // breakout entry skipped when the confirmation close already covered this fraction of the measured move
+const ENGULF_WINDOW_BARS = 10; // an engulfing reversal candle counts as a trigger only this close to the second extreme
 
 /** Quality filters that cut range-bound/chop patterns (all on by default). */
 export interface StochReversalFilters {
@@ -101,6 +105,13 @@ function priorLegOk(candles: Candle[], first: { price: number; index: number }, 
   }
   const leg = bearish ? first.price - opposite : opposite - first.price;
   return leg >= MIN_TREND_LEG_ATR * atrHere;
+}
+
+/** A reversal candle whose body engulfs the previous bar's opposite-coloured body. */
+function isEngulfing(prev: Candle, cur: Candle, bearish: boolean): boolean {
+  return bearish
+    ? cur.close < cur.open && prev.close > prev.open && cur.open >= prev.close && cur.close <= prev.open
+    : cur.close > cur.open && prev.close < prev.open && cur.open <= prev.close && cur.close >= prev.open;
 }
 
 /** Slow stochastic %K: raw %K smoothed with an SMA. */
@@ -276,6 +287,57 @@ export function detectStochReversalSetup(
   const measured = bearish ? entry - height : entry + height;
   const minTarget = bearish ? entry - MIN_RR * risk : entry + MIN_RR * risk;
   const takeProfit = bearish ? Math.min(measured, minTarget) : Math.max(measured, minTarget);
+  const spentLevel = bearish
+    ? entry - BREAKOUT_MAX_CONSUMED * (entry - measured)
+    : entry + BREAKOUT_MAX_CONSUMED * (measured - entry);
+
+  // engulfing trigger (outside retest mode): an engulfing reversal candle right
+  // at the second extreme, with the stochastic still there, confirms the
+  // reversal early — entered at that candle's close, well before the neckline
+  // break would confirm
+  if (entryMode !== "retest") {
+    const lastE = Math.min(candles.length - 1, cand.second.index + ENGULF_WINDOW_BARS);
+    for (let i = cand.second.index + 1; i <= lastE; i++) {
+      const cc = candles[i];
+      if (bearish ? cc.close > stopLoss : cc.close < stopLoss) break; // died before triggering — the main loop reports it
+      if (!isEngulfing(candles[i - 1], cc, bearish)) continue;
+      const kE = stoch[i];
+      const kP = stoch[i - 1];
+      const atExtreme =
+        (kE !== null && (bearish ? kE >= OVERBOUGHT : kE <= OVERSOLD)) ||
+        (kP !== null && (bearish ? kP >= OVERBOUGHT : kP <= OVERSOLD));
+      if (!atExtreme) continue;
+      const eClose = cc.close;
+      const eRisk = Math.abs(eClose - stopLoss);
+      const eSpent = bearish ? eClose <= spentLevel : eClose >= spentLevel;
+      if (eSpent || eRisk <= 0) break;
+      const eTp = bearish ? Math.min(measured, eClose - MIN_RR * eRisk) : Math.max(measured, eClose + MIN_RR * eRisk);
+      let state: StochReversalState = "triggered";
+      let stateDetail = `Entered at the close of the ${bearish ? "bearish" : "bullish"} engulfing candle at the second ${bearish ? "top" : "bottom"} (engulfing trigger)`;
+      for (let j = i + 1; j < candles.length; j++) {
+        const c2 = candles[j];
+        if (bearish ? c2.low <= eTp : c2.high >= eTp) {
+          state = "completed";
+          stateDetail = "Setup played out — take profit was reached";
+          break;
+        }
+        if (bearish ? c2.high >= stopLoss : c2.low <= stopLoss) {
+          state = "completed";
+          stateDetail = "Setup played out — stop level was reached after entry";
+          break;
+        }
+      }
+      return base(state, stateDetail, {
+        ...patternInfo,
+        confirmation: "engulfing",
+        confirmationTime: cc.time,
+        entry: eClose,
+        stopLoss,
+        takeProfit: eTp,
+        entryKind: "engulfing",
+      });
+    }
+  }
 
   // reversal confirmation after the second extreme: a close through the
   // neckline, or a CHoCH in the reversal direction
@@ -316,10 +378,12 @@ export function detectStochReversalSetup(
 
   // breakout entry: take the confirmation-bar close itself — the TP is then
   // recomputed from that entry (measured move, or the minimum R when nearer)
-  // and the entry is skipped when price already ran to the measured target or
-  // the stochastic sits at the wrong extreme on the confirmation bar
+  // and the entry is skipped when the move is already spent (the confirmation
+  // close consumed too much of the measured move — late confirmations leave a
+  // TP that can't realistically be reached) or the stochastic sits at the
+  // wrong extreme on the confirmation bar
   const confClose = candles[confIndex].close;
-  const ranTooFar = bearish ? confClose <= measured : confClose >= measured;
+  const ranTooFar = bearish ? confClose <= spentLevel : confClose >= spentLevel;
   const breakoutRisk = Math.abs(confClose - stopLoss);
   const confK = stoch[confIndex];
   const wrongSide = confK !== null && (bearish ? confK <= OVERSOLD : confK >= OVERBOUGHT);
@@ -360,7 +424,9 @@ export function detectStochReversalSetup(
   if (entryMode === "breakout") {
     return base(
       "invalidated",
-      "Price already reached the measured-move target at confirmation — breakout entry skipped",
+      wrongSide
+        ? `Breakout entry skipped — the stochastic was ${bearish ? "oversold at the breakdown (a sell is blocked)" : "overbought at the breakout (a buy is blocked)"}`
+        : "Confirmation came too late — the close had already consumed too much of the measured move, so the breakout entry was skipped",
       levels,
     );
   }
@@ -416,9 +482,9 @@ export interface StochReversalTrade {
   pattern: "double_top" | "double_bottom";
   direction: Direction;
   secondExtremeTime: number;
-  confirmation: "neckline_break" | "choch";
+  confirmation: "neckline_break" | "choch" | "engulfing";
   confirmationTime: number;
-  entryKind: "retest" | "breakout";
+  entryKind: "retest" | "breakout" | "engulfing";
   entry: number;
   stopLoss: number;
   takeProfit: number;
@@ -452,11 +518,12 @@ export interface StochReversalBacktest {
  * Replay the stochastic double top/bottom strategy over a single candle
  * series, exactly as live detection resolves it: qualifying pattern (two
  * near-equal extremes, interim neckline, stochastic 80+/20- at the second),
- * reversal confirmation (neckline close-through or CHoCH), then the entry per
- * the chosen mode: the neckline retest — only taken with the stochastic back
- * at the extreme (80+ for sells, 20- for buys) — and/or the confirmation-bar
- * close (breakout, skipped when it offers under the minimum R) — with SL
- * beyond the extreme and the measured-move/min-R target.
+ * reversal confirmation (neckline close-through, CHoCH, or an engulfing
+ * reversal candle at the second extreme), then the entry per the chosen mode:
+ * the neckline retest — only taken with the stochastic back at the extreme
+ * (80+ for sells, 20- for buys) — and/or the confirmation-bar close (breakout,
+ * skipped when the move is spent or the stochastic is at the wrong extreme) —
+ * with SL beyond the extreme and the measured-move/min-R target.
  * No look-ahead: a pattern only becomes tradeable once its second swing has
  * confirmed (SWING_LOOKBACK bars later), so entries are never filled before
  * the pattern was knowable. One position at a time; a bar spanning both SL
@@ -557,13 +624,61 @@ export function backtestStochReversal(
     const measured = bearish ? entry - height : entry + height;
     const minTarget = bearish ? entry - MIN_RR * risk : entry + MIN_RR * risk;
     const takeProfit = bearish ? Math.min(measured, minTarget) : Math.max(measured, minTarget);
+    const spentLevel = bearish
+      ? entry - BREAKOUT_MAX_CONSUMED * (entry - measured)
+      : entry + BREAKOUT_MAX_CONSUMED * (measured - entry);
     const detectIdx = cand.second.index + SWING_LOOKBACK; // pattern knowable only once the second swing confirmed
     const choch = breaks.find((br) => br.type === "choch" && br.direction === cand.direction && br.index > cand.second.index);
 
+    let confIdx = -1;
+    let confirmation: "neckline_break" | "choch" | "engulfing" | null = null;
+    let entryIdx = -1;
+    let entryPrice = entry;
+    let tpUsed = takeProfit;
+    let entryKind: "retest" | "breakout" | "engulfing" = "retest";
+
+    // engulfing trigger (outside retest mode): an engulfing reversal candle at
+    // the second extreme with the stochastic still there — entered at the close
+    // of the bar where both the candle and the pattern were knowable (the
+    // second swing confirms SWING_LOOKBACK bars after the extreme)
+    if (entryMode !== "retest") {
+      const lastE = Math.min(n - 1, cand.second.index + ENGULF_WINDOW_BARS);
+      for (let i = cand.second.index + 1; i <= lastE; i++) {
+        if (bearish ? candles[i].close > stopLoss : candles[i].close < stopLoss) break;
+        if (!isEngulfing(candles[i - 1], candles[i], bearish)) continue;
+        const kE = stoch[i];
+        const kP = stoch[i - 1];
+        const atExtreme =
+          (kE !== null && (bearish ? kE >= OVERBOUGHT : kE <= OVERSOLD)) ||
+          (kP !== null && (bearish ? kP >= OVERBOUGHT : kP <= OVERSOLD));
+        if (!atExtreme) continue;
+        const eIdx = Math.max(i, detectIdx);
+        if (eIdx >= n) break;
+        let deadE = false;
+        for (let j = i; j <= eIdx; j++) {
+          if (bearish ? candles[j].close > stopLoss : candles[j].close < stopLoss) {
+            deadE = true;
+            break;
+          }
+        }
+        if (deadE) break;
+        const eClose = candles[eIdx].close;
+        const eRisk = Math.abs(eClose - stopLoss);
+        const eSpent = bearish ? eClose <= spentLevel : eClose >= spentLevel;
+        if (eSpent || eRisk <= 0) break;
+        confIdx = i;
+        confirmation = "engulfing";
+        entryIdx = eIdx;
+        entryPrice = eClose;
+        tpUsed = bearish ? Math.min(measured, eClose - MIN_RR * eRisk) : Math.max(measured, eClose + MIN_RR * eRisk);
+        entryKind = "engulfing";
+        break;
+      }
+    }
+
+    if (confirmation !== "engulfing") {
     // confirmation: close through the neckline or a CHoCH in the reversal direction
     const breakMargin = filters.decisiveBreak ? BREAK_MARGIN_ATR * atrHere : 0;
-    let confIdx = -1;
-    let confirmation: "neckline_break" | "choch" | null = null;
     let dead = false;
     for (let i = cand.second.index + 1; i < n; i++) {
       const c = candles[i];
@@ -588,20 +703,17 @@ export function backtestStochReversal(
     }
 
     // breakout entry at the confirmation close: only once the pattern was
-    // knowable, skipped when price already ran to the measured target or the
-    // stochastic sits at the wrong extreme on the confirmation bar; the TP
-    // is recomputed from the actual entry (measured move, or min R when nearer)
+    // knowable, skipped when the move is already spent (the confirmation close
+    // consumed too much of the measured move) or the stochastic sits at the
+    // wrong extreme on the confirmation bar; the TP is recomputed from the
+    // actual entry (measured move, or min R when nearer)
     const confClose = candles[confIdx].close;
-    const ranTooFar = bearish ? confClose <= measured : confClose >= measured;
+    const ranTooFar = bearish ? confClose <= spentLevel : confClose >= spentLevel;
     const breakoutRisk = Math.abs(confClose - stopLoss);
     const confK = stoch[confIdx];
     const wrongSide = confK !== null && (bearish ? confK <= OVERSOLD : confK >= OVERBOUGHT);
     const useBreakout = entryMode !== "retest" && confIdx >= detectIdx && !ranTooFar && !wrongSide && breakoutRisk > 0;
 
-    let entryIdx = -1;
-    let entryPrice = entry;
-    let tpUsed = takeProfit;
-    let entryKind: "retest" | "breakout" = "retest";
     if (useBreakout) {
       entryIdx = confIdx;
       entryPrice = confClose;
@@ -634,6 +746,7 @@ export function backtestStochReversal(
         missed++;
         continue;
       }
+    }
     }
 
     // in trade: SL checked before TP (conservative on bars spanning both)
@@ -764,7 +877,12 @@ export function stochReversalOpportunity(symbol: string, timeframe: Timeframe, s
       },
       {
         name: "Reversal confirmation",
-        detail: setup.confirmation === "choch" ? "CHoCH against the prior move" : `Close through the neckline ${setup.neckline?.toFixed(2)}`,
+        detail:
+          setup.confirmation === "choch"
+            ? "CHoCH against the prior move"
+            : setup.confirmation === "engulfing"
+              ? `Engulfing reversal candle at the second ${setup.pattern === "double_top" ? "top" : "bottom"}`
+              : `Close through the neckline ${setup.neckline?.toFixed(2)}`,
         weight: 25,
       },
       { name: "Entry", detail: setup.stateDetail, weight: setup.state === "triggered" ? 10 : 0 },

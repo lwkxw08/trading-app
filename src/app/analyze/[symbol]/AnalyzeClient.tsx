@@ -300,7 +300,7 @@ export default function AnalyzeSymbol() {
         stopLoss: s.stopLoss,
         takeProfit: s.takeProfit,
         strategyName: STOCH_REVERSAL_STRATEGY_NAME,
-        notes: `Logged from analysis card · ${s.pattern === "double_top" ? "double top" : "double bottom"} · stoch ${s.stochAtSecond !== null ? s.stochAtSecond.toFixed(0) : "-"} · ${s.confirmation === "choch" ? "CHoCH" : "neckline break"} confirmed · neckline retest entry ${fmtPrice(s.entry)}`,
+        notes: `Logged from analysis card · ${s.pattern === "double_top" ? "double top" : "double bottom"} · stoch ${s.stochAtSecond !== null ? s.stochAtSecond.toFixed(0) : "-"} · ${s.confirmation === "choch" ? "CHoCH" : s.confirmation === "engulfing" ? "engulfing candle" : "neckline break"} confirmed · ${s.entryKind === "retest" ? "neckline retest" : s.entryKind ?? "retest"} entry ${fmtPrice(s.entry)}`,
         snapshot: analysis
           ? {
               trendDirection: analysis.trend.direction,

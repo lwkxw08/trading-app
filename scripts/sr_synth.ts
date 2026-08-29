@@ -158,3 +158,22 @@ show("breakout entry at confirmation close (breakout)", candles.slice(0, marks.a
 show("breakout completed after TP", candles.slice(0, marks.completed), "both");
 show("breakout entry, mirrored double bottom", m.slice(0, marks.armed), "both");
 show("retest-only mode still waits for the retest", candles.slice(0, marks.armed), "retest");
+
+console.log("--- engulfing trigger ---");
+// bar 80 becomes a bearish engulfing candle (its body engulfs bar 79's
+// 109.5 -> 110 body) right after the second top with the stochastic still
+// overbought: outside retest mode that confirms the reversal and enters at
+// its close, well before the neckline break
+const eng = candles.slice(0, marks.awaiting).map((cd) => ({ ...cd }));
+eng[80] = c(80, 110, 109.0);
+show("engulfing entry right after the second top (both)", eng, "both");
+show("engulfing entry (breakout mode)", eng, "breakout");
+show("engulfing ignored in retest mode (still awaiting confirmation)", eng, "retest");
+const engDone = [...eng];
+let ep = engDone[engDone.length - 1].close;
+for (let k = 0; k < 25; k++) {
+  engDone.push(c(300 + k, ep, ep - 0.6));
+  ep -= 0.6;
+}
+show("engulfing entry completed at TP", engDone, "both");
+show("engulfing entry, mirrored double bottom", mirror(eng), "both");

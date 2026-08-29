@@ -1193,9 +1193,9 @@ export default function BacktestPage() {
                   onChange={(e) => setSrEntryMode(e.target.value as StochReversalEntryMode)}
                   className={`${inputCls} mt-1 block`}
                 >
-                  <option value="both">Breakout, else retest</option>
+                  <option value="both">Engulfing/breakout, else retest</option>
                   <option value="retest">Neckline retest only</option>
-                  <option value="breakout">Breakout only</option>
+                  <option value="breakout">Engulfing/breakout only</option>
                 </select>
               </label>
               <div className="block text-xs">

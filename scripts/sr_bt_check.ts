@@ -35,8 +35,10 @@ async function main() {
     "table.new",
     "plotshape(buySignal",
     "plotshape(sellSignal",
-    "[v6]",
+    "[v7]",
     "wrongSide",
+    "maxConsumed",
+    "spentLevel",
     "entryMode",
     "\"retest\", \"breakout\", \"both\"",
     "strictGate",
@@ -45,6 +47,11 @@ async function main() {
     "breakMarginAtr",
     "measured",
     "ranTooFar",
+    "useEngulf",
+    "engulfWindow",
+    "bullEngulf",
+    "bearEngulf",
+    "kAtExtreme",
   ];
   const missing = mustContain.filter((s) => !pine.includes(s));
   console.log("pine length:", pine.length, "missing tokens:", missing.length ? missing : "none");
@@ -78,9 +85,11 @@ async function main() {
         if (t.entryTime >= t.exitTime) throw new Error("exit not after entry");
         if (t.confirmationTime > t.entryTime) throw new Error("entry before confirmation");
         if (t.secondExtremeTime >= t.confirmationTime) throw new Error("confirmation before pattern");
-        if (mode === "retest" && t.entryKind !== "retest") throw new Error("retest mode produced a breakout entry");
-        if (mode === "breakout" && t.entryKind !== "breakout") throw new Error("breakout mode produced a retest entry");
+        if (mode === "retest" && t.entryKind !== "retest") throw new Error("retest mode produced a non-retest entry");
+        if (mode === "breakout" && t.entryKind === "retest") throw new Error("breakout mode produced a retest entry");
         if (t.entryKind === "breakout" && t.entryTime !== t.confirmationTime) throw new Error("breakout entry not at confirmation bar");
+        if (t.entryKind === "engulfing" && t.confirmation !== "engulfing") throw new Error("engulfing entry without engulfing confirmation");
+        if (t.entryKind === "engulfing" && t.entryTime < t.confirmationTime) throw new Error("engulfing entry before the engulfing bar");
       }
       // equity curve monotonic bookkeeping
       if (bt.equityR.length !== bt.trades.length) throw new Error("equity length mismatch");

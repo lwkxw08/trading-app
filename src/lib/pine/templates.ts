@@ -308,7 +308,7 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
-const STOCH_REVERSAL_PINE_BUILD = "v6";
+const STOCH_REVERSAL_PINE_BUILD = "v7";
 
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -338,12 +338,15 @@ bufAtr      = input.float(0.5, "SL buffer beyond the extreme (ATR)", minval=0.0,
 minRR       = input.float(${minRR}, "Minimum reward multiple (R)", minval=0.5, step=0.25)
 maxAgeBars  = input.int(120, "Cancel unfilled setups after (bars)", minval=10)
 strictGate  = input.bool(true, "Strict stochastic at retest entry (SELL needs 80+, BUY needs 20- on the signal bar)")
-entryMode   = input.string("both", "Entry mode", options=["retest", "breakout", "both"], tooltip="retest: enter on the neckline retest (stochastic-gated). breakout: enter at the close of the confirmation bar so vertical moves that never retest aren't missed — skipped when that close already reached the measured-move target or the stochastic sits at the wrong extreme on that bar (no BUY while overbought, no SELL while oversold). both: breakout when viable, otherwise the retest.")
+entryMode   = input.string("both", "Entry mode", options=["retest", "breakout", "both"], tooltip="retest: enter on the neckline retest (stochastic-gated). breakout: enter at the close of the confirmation bar so vertical moves that never retest aren't missed — skipped when that close already consumed too much of the measured move (see max-consumed input) or the stochastic sits at the wrong extreme on that bar (no BUY while overbought, no SELL while oversold). both: breakout when viable, otherwise the retest. Outside retest mode an engulfing reversal candle at the second extreme is an additional early trigger (see below).")
 useTrendLeg = input.bool(true, "Require a prior trend leg into the pattern", tooltip="The move into the first extreme must span at least the leg size below — filters range-bound double tops/bottoms that have nothing to reverse.")
 trendLegAtr = input.float(3.0, "Min prior leg into the first extreme (ATR)", minval=0.5, step=0.5)
 trendLookback = input.int(40, "Prior leg lookback (bars)", minval=10)
 useDivergence = input.bool(true, "Require stochastic divergence at the second extreme", tooltip="The stochastic at the second top must be below its value at the first top (mirror for bottoms) — the standard double-top quality filter.")
 breakMarginAtr = input.float(0.15, "Decisive neckline break margin (ATR)", minval=0.0, step=0.05, tooltip="The confirming close must clear the neckline by this margin — marginal squeaks through the neckline in chop are where most fakeouts come from. Set 0 to disable.")
+maxConsumed = input.float(0.5, "Max move consumed at breakout entry", minval=0.1, maxval=1.0, step=0.05, tooltip="A breakout entry is skipped when the confirmation close has already covered more than this fraction of the measured move past the neckline — late confirmations leave a target that can't realistically be reached.")
+useEngulf   = input.bool(true, "Engulfing candle trigger at the second extreme", tooltip="An engulfing reversal candle right at the second top/bottom, with the stochastic still at the extreme, confirms the reversal early — entered at the close of the bar where both the candle and the pattern are known, well before the neckline break would confirm. Only active outside retest entry mode.")
+engulfWindow = input.int(10, "Max bars after the second extreme for the engulfing trigger", minval=1)
 
 // ── Stochastic + pivots ────────────────────────────────────────────────
 stochK = ta.sma(ta.stoch(close, high, low, stochLen), stochSmooth)
@@ -353,6 +356,11 @@ pl = ta.pivotlow(low, pivotLen, pivotLen)
 // stochastic near the pivot bar (a small window around the extreme)
 kNearHigh = math.max(nz(stochK[pivotLen - 1], 0), math.max(nz(stochK[pivotLen], 0), nz(stochK[pivotLen + 1], 0)))
 kNearLow  = math.min(nz(stochK[pivotLen - 1], 100), math.min(nz(stochK[pivotLen], 100), nz(stochK[pivotLen + 1], 100)))
+// engulfing reversal candle o bars back: a body engulfing the previous bar's opposite-coloured body
+bullEngulf(int o) => close[o] > open[o] and close[o + 1] < open[o + 1] and open[o] <= close[o + 1] and close[o] >= open[o + 1]
+bearEngulf(int o) => close[o] < open[o] and close[o + 1] > open[o + 1] and open[o] >= close[o + 1] and close[o] <= open[o + 1]
+// stochastic still at the pattern's extreme on (or one bar before) the bar o bars back
+kAtExtreme(int o, int d) => d == -1 ? (nz(stochK[o], 0) >= obLevel or nz(stochK[o + 1], 0) >= obLevel) : (nz(stochK[o], 100) <= osLevel or nz(stochK[o + 1], 100) <= osLevel)
 // prior leg into a just-confirmed pivot: the range of the lookback window ending at the extreme bar
 legLowIntoPivot  = ta.lowest(low, trendLookback)[pivotLen]
 legHighIntoPivot = ta.highest(high, trendLookback)[pivotLen]
@@ -435,6 +443,31 @@ bool sellSignal = false
 if (state == 1 or state == 2) and (bar_index - patternBar) > maxAgeBars
     state := 0
 
+// engulfing trigger: an engulfing reversal candle at the second extreme with the
+// stochastic still there confirms the reversal early — entered at the current
+// close (the first bar where both the candle and the pattern are known); on the
+// pattern-formation bar the pivotLen bars since the extreme are checked too
+if useEngulf and entryMode != "retest" and state == 1 and (bar_index - (patternBar - pivotLen)) <= engulfWindow
+    engulfSeen = false
+    if patternFormed
+        for o = 0 to pivotLen - 1
+            if (dir == -1 ? bearEngulf(o) : bullEngulf(o)) and kAtExtreme(o, dir)
+                engulfSeen := true
+    else
+        engulfSeen := (dir == -1 ? bearEngulf(0) : bullEngulf(0)) and kAtExtreme(0, dir)
+    if engulfSeen
+        spentLevelE = dir == -1 ? entry - maxConsumed * (entry - measured) : entry + maxConsumed * (measured - entry)
+        engSpent = dir == -1 ? close <= spentLevelE : close >= spentLevelE
+        engRisk = math.abs(close - sl)
+        stillValid = dir == -1 ? close < sl : close > sl
+        if not engSpent and engRisk > 0 and stillValid
+            entry := close
+            tp := dir == -1 ? math.min(measured, close - minRR * engRisk) : math.max(measured, close + minRR * engRisk)
+            confirmed := true
+            sellSignal := dir == -1
+            buySignal := dir == 1
+            state := 3
+
 if state == 1
     if dir == -1 ? close > sl : close < sl
         state := 0 // died beyond the stop level before confirming
@@ -442,9 +475,11 @@ if state == 1
         confirmed := true
         // breakout entry: take the confirmation close itself (no retest needed);
         // the TP is recomputed from that entry — measured move, or the minimum R
-        // when nearer — and skipped when price already ran to the measured target
-        // or the stochastic sits at the wrong extreme on the confirmation bar
-        ranTooFar = dir == -1 ? close <= measured : close >= measured
+        // when nearer — and skipped when the close already consumed too much of
+        // the measured move (late confirmation — the move is spent) or the
+        // stochastic sits at the wrong extreme on the confirmation bar
+        spentLevel = dir == -1 ? entry - maxConsumed * (entry - measured) : entry + maxConsumed * (measured - entry)
+        ranTooFar = dir == -1 ? close <= spentLevel : close >= spentLevel
         breakoutRisk = math.abs(close - sl)
         wrongSide = dir == -1 ? stochK <= osLevel : stochK >= obLevel
         if entryMode != "retest" and not ranTooFar and not wrongSide and breakoutRisk > 0
@@ -454,7 +489,7 @@ if state == 1
             buySignal := dir == 1
             state := 3
         else if entryMode == "breakout"
-            state := 0 // price already reached the measured target — breakout entry skipped
+            state := 0 // move already spent at confirmation — breakout entry skipped
         else
             state := 2
 
@@ -514,8 +549,8 @@ if barstate.islast
 // ── Alerts ─────────────────────────────────────────────────────────────
 alertcondition(patternFormed, title="Pattern formed", message="${sanitize(cfg.name)}: double top/bottom with a stochastic extreme on {{ticker}} — awaiting reversal confirmation")
 alertcondition(confirmed, title="Reversal confirmed", message="${sanitize(cfg.name)}: reversal confirmed on {{ticker}} — watching for the neckline retest")
-alertcondition(buySignal,  title="Buy signal",  message="${sanitize(cfg.name)}: BUY {{ticker}} @ {{close}} (double bottom entry)")
-alertcondition(sellSignal, title="Sell signal", message="${sanitize(cfg.name)}: SELL {{ticker}} @ {{close}} (double top entry)")
+alertcondition(buySignal,  title="Buy signal",  message="${sanitize(cfg.name)}: BUY {{ticker}} @ {{close}} (double bottom entry — retest, breakout or engulfing trigger)")
+alertcondition(sellSignal, title="Sell signal", message="${sanitize(cfg.name)}: SELL {{ticker}} @ {{close}} (double top entry — retest, breakout or engulfing trigger)")
 `;
 }
 
