@@ -308,7 +308,7 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
-const STOCH_REVERSAL_PINE_BUILD = "v10";
+const STOCH_REVERSAL_PINE_BUILD = "v11";
 
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -458,6 +458,50 @@ bool sellSignal = false
 if (state == 1 or state == 2) and (bar_index - patternBar) > maxAgeBars
     state := 0
 
+// second-touch trigger: price re-tags the first extreme's level (within
+// tolerance) and prints a reversal candle with the stochastic at the extreme —
+// entered at this bar's close, without waiting for the second pivot to
+// confirm (which lags by pivotLen bars)
+kRecentLow  = ta.lowest(stochK, stochWindow + 1)
+kRecentHigh = ta.highest(stochK, stochWindow + 1)
+if useEngulf and entryMode != "retest" and state != 3
+    if not na(botA) and not na(neckHigh) and (bar_index - botABar) <= maxGapBars and (bar_index - botABar) > pivotLen
+        touchLowT = math.min(low, low[1])
+        patternLowT = math.min(touchLowT, botA)
+        heightT = neckHigh - patternLowT
+        if math.abs(touchLowT - botA) <= tolAtr * atrValue and heightT >= minHeightAtr * atrValue and bullEngulf(0) and kRecentLow <= osLevel and nz(stochK, 50) < obLevel and (not useDivergence or kRecentLow > botAK - divTolerance) and (not useTrendLeg or botALeg >= trendLegAtr * atrValue)
+            slT = patternLowT - bufAtr * atrValue
+            riskT = close - slT
+            spentT = neckHigh + maxConsumed * heightT
+            if riskT > 0 and close < spentT
+                dir := 1
+                entry := close
+                sl := slT
+                measured := neckHigh + heightT
+                tp := math.max(measured, close + minRR * riskT)
+                state := 3
+                patternBar := bar_index
+                buySignal := true
+                confirmed := true
+    if not buySignal and state != 3 and not na(topA) and not na(neckLow) and (bar_index - topABar) <= maxGapBars and (bar_index - topABar) > pivotLen
+        touchHighT = math.max(high, high[1])
+        patternHighT = math.max(touchHighT, topA)
+        heightT2 = patternHighT - neckLow
+        if math.abs(touchHighT - topA) <= tolAtr * atrValue and heightT2 >= minHeightAtr * atrValue and bearEngulf(0) and kRecentHigh >= obLevel and nz(stochK, 50) > osLevel and (not useDivergence or kRecentHigh < topAK + divTolerance) and (not useTrendLeg or topALeg >= trendLegAtr * atrValue)
+            slT2 = patternHighT + bufAtr * atrValue
+            riskT2 = slT2 - close
+            spentT2 = neckLow - maxConsumed * heightT2
+            if riskT2 > 0 and close > spentT2
+                dir := -1
+                entry := close
+                sl := slT2
+                measured := neckLow - heightT2
+                tp := math.min(measured, close - minRR * riskT2)
+                state := 3
+                patternBar := bar_index
+                sellSignal := true
+                confirmed := true
+
 // engulfing trigger: an engulfing reversal candle at the second extreme (whose
 // stochastic tagged the pattern's extreme) confirms the reversal early — entered at the current
 // close (the first bar where both the candle and the pattern are known); on the
@@ -476,7 +520,11 @@ if useEngulf and entryMode != "retest" and state == 1 and (bar_index - (patternB
         engSpent = dir == -1 ? close <= spentLevelE : close >= spentLevelE
         engRisk = math.abs(close - sl)
         stillValid = dir == -1 ? close < sl : close > sl
-        if not engSpent and engRisk > 0 and stillValid
+        // wrong-side veto on the actual signal bar: the reversal candle may
+        // have printed bars ago — the stochastic must not sit at the opposite
+        // extreme on the bar the entry is taken
+        wrongNow = dir == -1 ? nz(stochK, 100) <= osLevel : nz(stochK, 0) >= obLevel
+        if not engSpent and engRisk > 0 and stillValid and not wrongNow
             entry := close
             tp := dir == -1 ? math.min(measured, close - minRR * engRisk) : math.max(measured, close + minRR * engRisk)
             confirmed := true

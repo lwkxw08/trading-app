@@ -203,6 +203,112 @@ function stochNearIndex(stoch: (number | null)[], index: number, wantHigh: boole
   return best;
 }
 
+/** A second-touch trigger: price re-tags the first extreme's level (within
+ * tolerance) and prints a reversal candle with the stochastic at the extreme —
+ * entered at that candle's close, without waiting for the second swing pivot
+ * to confirm (which lags by SWING_LOOKBACK bars). */
+interface SecondTouchTrigger {
+  pattern: "double_top" | "double_bottom";
+  direction: Direction;
+  first: { price: number; index: number; time: number };
+  touchIndex: number;
+  touchExtreme: number;
+  neckline: number;
+  stochAtTouch: number;
+  entry: number;
+  stopLoss: number;
+  takeProfit: number;
+}
+
+function findSecondTouchTriggers(
+  candles: Candle[],
+  atr14: (number | null)[],
+  stoch: (number | null)[],
+  swings: ReturnType<typeof detectSwings>,
+  filters: StochReversalFilters,
+): SecondTouchTrigger[] {
+  const n = candles.length;
+  const highs = swings.filter((s) => s.type === "high");
+  const lows = swings.filter((s) => s.type === "low");
+  const out: SecondTouchTrigger[] = [];
+
+  const scan = (bearish: boolean) => {
+    const firsts = bearish ? highs : lows;
+    const necks = bearish ? lows : highs;
+    for (let a = 0; a < firsts.length; a++) {
+      const first = firsts[a];
+      // the first extreme stays the reference only until the next same-side
+      // pivot confirms and replaces it (mirrors the Pine tracking)
+      const next = firsts[a + 1];
+      const scanEnd = Math.min(
+        n - 1,
+        first.index + MAX_EXTREME_GAP_BARS,
+        next ? next.index + SWING_LOOKBACK - 1 : n - 1,
+      );
+      for (let i = first.index + SWING_LOOKBACK + 1; i <= scanEnd; i++) {
+        const atrHere = atr14[i] ?? candles[i].close * 0.01;
+        // interim neckline: confirmed opposite pivots between the extremes
+        const between = necks.filter((s) => s.index > first.index && s.index + SWING_LOOKBACK <= i);
+        if (between.length === 0) continue;
+        const neckline = bearish ? Math.min(...between.map((s) => s.price)) : Math.max(...between.map((s) => s.price));
+        const touchExtreme = bearish
+          ? Math.max(candles[i].high, candles[i - 1].high)
+          : Math.min(candles[i].low, candles[i - 1].low);
+        if (Math.abs(touchExtreme - first.price) > TOP_TOLERANCE_ATR * atrHere) continue;
+        const patternExtreme = bearish ? Math.max(touchExtreme, first.price) : Math.min(touchExtreme, first.price);
+        const height = Math.abs(patternExtreme - neckline);
+        if (height < MIN_HEIGHT_ATR * atrHere) continue;
+        if (!isEngulfing(candles[i - 1], candles[i], bearish)) continue;
+        // the stochastic tagged the extreme within the window ending at the
+        // trigger bar, and is not at the opposite extreme on the trigger bar
+        let kTag: number | null = null;
+        for (let j = Math.max(0, i - STOCH_WINDOW_BARS); j <= i; j++) {
+          const k = stoch[j];
+          if (k === null) continue;
+          if (kTag === null || (bearish ? k > kTag : k < kTag)) kTag = k;
+        }
+        if (kTag === null || (bearish ? kTag < OVERBOUGHT : kTag > OVERSOLD)) continue;
+        const kNow = stoch[i];
+        if (kNow !== null && (bearish ? kNow <= OVERSOLD : kNow >= OVERBOUGHT)) continue;
+        if (filters.divergenceFilter) {
+          const stFirst = stochNearIndex(stoch, first.index, bearish);
+          if (stFirst !== null && (bearish ? kTag >= stFirst + DIVERGENCE_TOLERANCE : kTag <= stFirst - DIVERGENCE_TOLERANCE)) continue;
+        }
+        if (filters.trendFilter && !priorLegOk(candles, first, bearish, atrHere)) continue;
+        const stopLoss = bearish ? patternExtreme + STOP_BUFFER_ATR * atrHere : patternExtreme - STOP_BUFFER_ATR * atrHere;
+        const eClose = candles[i].close;
+        const risk = Math.abs(eClose - stopLoss);
+        if (risk <= 0) continue;
+        if (bearish ? eClose >= stopLoss : eClose <= stopLoss) continue;
+        const measured = bearish ? neckline - height : neckline + height;
+        const spentLevel = bearish
+          ? neckline - BREAKOUT_MAX_CONSUMED * height
+          : neckline + BREAKOUT_MAX_CONSUMED * height;
+        if (bearish ? eClose <= spentLevel : eClose >= spentLevel) continue;
+        const takeProfit = bearish ? Math.min(measured, eClose - MIN_RR * risk) : Math.max(measured, eClose + MIN_RR * risk);
+        out.push({
+          pattern: bearish ? "double_top" : "double_bottom",
+          direction: bearish ? "bearish" : "bullish",
+          first: { price: first.price, index: first.index, time: first.time },
+          touchIndex: i,
+          touchExtreme,
+          neckline,
+          stochAtTouch: kTag,
+          entry: eClose,
+          stopLoss,
+          takeProfit,
+        });
+        break; // one trigger per first extreme
+      }
+    }
+  };
+
+  scan(true);
+  scan(false);
+  out.sort((x, y) => x.touchIndex - y.touchIndex);
+  return out;
+}
+
 export function detectStochReversalSetup(
   candles: Candle[],
   entryMode: StochReversalEntryMode = "both",
@@ -285,6 +391,51 @@ export function detectStochReversalSetup(
   }
 
   const cand = candidates.sort((a, b) => b.second.index - a.second.index)[0];
+
+  // second-touch trigger (outside retest mode): price re-tags the first
+  // extreme's level with a reversal candle and the stochastic at the extreme —
+  // entered at that close without waiting for the second pivot to confirm
+  if (entryMode !== "retest") {
+    const triggers = findSecondTouchTriggers(candles, atr14, stoch, swings, filters).filter(
+      (t) => lastIdx - t.touchIndex <= MAX_PATTERN_AGE_BARS,
+    );
+    const touch = triggers[triggers.length - 1];
+    if (touch && (!cand || touch.touchIndex >= cand.second.index)) {
+      const tBear = touch.direction === "bearish";
+      let tState: StochReversalState = "triggered";
+      let tDetail = `Entered at the close of the ${tBear ? "bearish" : "bullish"} reversal candle on the second touch of the ${tBear ? "double-top" : "double-bottom"} level (second-touch trigger)`;
+      for (let j = touch.touchIndex + 1; j < candles.length; j++) {
+        const c2 = candles[j];
+        if (tBear ? c2.low <= touch.takeProfit : c2.high >= touch.takeProfit) {
+          tState = "completed";
+          tDetail = "Setup played out — take profit was reached";
+          break;
+        }
+        if (tBear ? c2.high >= touch.stopLoss : c2.low <= touch.stopLoss) {
+          tState = "completed";
+          tDetail = "Setup played out — stop level was reached after entry";
+          break;
+        }
+      }
+      return base(tState, tDetail, {
+        direction: touch.direction,
+        pattern: touch.pattern,
+        firstExtreme: touch.first.price,
+        secondExtreme: touch.touchExtreme,
+        firstExtremeTime: touch.first.time,
+        secondExtremeTime: candles[touch.touchIndex].time,
+        neckline: touch.neckline,
+        stochAtSecond: touch.stochAtTouch,
+        confirmation: "engulfing",
+        confirmationTime: candles[touch.touchIndex].time,
+        entry: touch.entry,
+        stopLoss: touch.stopLoss,
+        takeProfit: touch.takeProfit,
+        entryKind: "engulfing",
+      });
+    }
+  }
+
   if (!cand) {
     return base(
       "awaiting_pattern",
@@ -633,7 +784,58 @@ export function backtestStochReversal(
   let openAtEnd = 0;
   let busyUntil = -1; // index of the last trade's exit — one position at a time
 
-  for (const cand of candidates) {
+  // second-touch triggers enter at the touch bar itself, without waiting for
+  // the second pivot to confirm — interleave them with the pivot candidates in
+  // chronological order under the same one-position-at-a-time rule
+  const touches = entryMode !== "retest" ? findSecondTouchTriggers(candles, atr14, stoch, swings, filters) : [];
+  type BtEvent = { at: number; cand?: PatternCandidate; touch?: SecondTouchTrigger };
+  const events: BtEvent[] = [
+    ...candidates.map((cand): BtEvent => ({ at: cand.second.index, cand })),
+    ...touches.map((touch): BtEvent => ({ at: touch.touchIndex, touch })),
+  ].sort((x, y) => x.at - y.at);
+
+  for (const ev of events) {
+    if (ev.touch) {
+      const touch = ev.touch;
+      if (touch.touchIndex <= busyUntil) continue;
+      const tBear = touch.direction === "bearish";
+      let exitT: { index: number; price: number; reason: "tp" | "sl" } | null = null;
+      for (let i = touch.touchIndex + 1; i < n; i++) {
+        const c = candles[i];
+        if (tBear ? c.high >= touch.stopLoss : c.low <= touch.stopLoss) {
+          exitT = { index: i, price: touch.stopLoss, reason: "sl" };
+          break;
+        }
+        if (tBear ? c.low <= touch.takeProfit : c.high >= touch.takeProfit) {
+          exitT = { index: i, price: touch.takeProfit, reason: "tp" };
+          break;
+        }
+      }
+      if (!exitT) {
+        openAtEnd++;
+        continue;
+      }
+      const tRisk = Math.abs(touch.entry - touch.stopLoss);
+      trades.push({
+        pattern: touch.pattern,
+        direction: touch.direction,
+        secondExtremeTime: candles[touch.touchIndex].time,
+        confirmation: "engulfing",
+        confirmationTime: candles[touch.touchIndex].time,
+        entryKind: "engulfing",
+        entry: touch.entry,
+        stopLoss: touch.stopLoss,
+        takeProfit: touch.takeProfit,
+        entryTime: candles[touch.touchIndex].time,
+        exitTime: candles[exitT.index].time,
+        exitPrice: exitT.price,
+        exitReason: exitT.reason,
+        rMultiple: exitT.reason === "tp" ? Number((Math.abs(touch.takeProfit - touch.entry) / tRisk).toFixed(2)) : -1,
+      });
+      busyUntil = exitT.index;
+      continue;
+    }
+    const cand = ev.cand!;
     if (cand.second.index <= busyUntil) continue;
     const bearish = cand.pattern === "double_top";
     const atrHere = atr14[cand.second.index] ?? candles[cand.second.index].close * 0.01;
@@ -679,6 +881,11 @@ export function backtestStochReversal(
           }
         }
         if (deadE) break;
+        // wrong-side veto on the actual entry bar: when the entry is deferred
+        // to the pattern-confirmation bar, the stochastic may have crossed to
+        // the opposite extreme since the reversal candle printed
+        const kAtEntry = stoch[eIdx];
+        if (kAtEntry !== null && (bearish ? kAtEntry <= OVERSOLD : kAtEntry >= OVERBOUGHT)) continue;
         const eClose = candles[eIdx].close;
         const eRisk = Math.abs(eClose - stopLoss);
         const eSpent = bearish ? eClose <= spentLevel : eClose >= spentLevel;
