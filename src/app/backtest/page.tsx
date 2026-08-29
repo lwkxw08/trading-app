@@ -1159,8 +1159,8 @@ export default function BacktestPage() {
             <p className="mt-1 text-xs text-muted">
               Replays the dedicated detector exactly like live detection: double top/bottom (two near-equal extremes)
               with the slow stochastic 80+/20- at the second one → reversal confirmation (neckline close-through or
-              CHoCH) → entry on the neckline retest only while the stochastic is back at the extreme (80+ for sells,
-              20- for buys) → SL beyond the pattern extreme with ATR room → measured-move TP
+              CHoCH) → entry on the neckline retest (never while the stochastic is at the opposite extreme — no sells
+              while oversold, no buys while overbought) → SL beyond the pattern extreme with ATR room → measured-move TP
               (min 1.5R). No look-ahead: patterns only count once their second swing was confirmable; a bar spanning
               both SL and TP counts as a stop.
             </p>

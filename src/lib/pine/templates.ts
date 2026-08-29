@@ -333,6 +333,7 @@ maxGapBars  = input.int(80, "Max bars between the two extremes", minval=5)
 bufAtr      = input.float(0.5, "SL buffer beyond the extreme (ATR)", minval=0.0, step=0.1)
 minRR       = input.float(${minRR}, "Minimum reward multiple (R)", minval=0.5, step=0.25)
 maxAgeBars  = input.int(120, "Cancel unfilled setups after (bars)", minval=10)
+strictGate  = input.bool(false, "Strict stochastic at entry (require 80+/20- on the signal bar)")
 
 // ── Stochastic + pivots ────────────────────────────────────────────────
 stochK = ta.sma(ta.stoch(close, high, low, stochLen), stochSmooth)
@@ -417,9 +418,10 @@ if state == 1
         state := 2
         confirmed := true
 
-// hard gate at the signal bar: a SELL only fires with the stochastic overbought,
-// a BUY only with it oversold — a retest without the stochastic extreme is skipped
-stochGateOk = dir == -1 ? stochK >= obLevel : stochK <= osLevel
+// gate at the signal bar: a SELL never fires while the stochastic is oversold and
+// a BUY never while it is overbought (the pattern itself already required the
+// extreme); strict mode additionally requires the full extreme on the signal bar
+stochGateOk = strictGate ? (dir == -1 ? stochK >= obLevel : stochK <= osLevel) : (dir == -1 ? stochK > osLevel : stochK < obLevel)
 
 if state == 2 and not confirmed // don't act on the confirmation bar itself
     if dir == -1 ? close > sl : close < sl
