@@ -308,7 +308,7 @@ alertcondition(newSetup, title="Setup armed", message="${sanitize(cfg.name)}: 15
  * an ATR buffer, TP at the measured move extended to a minimum R multiple.
  * Works on any symbol/timeframe; pivots confirm pivotLen bars later (no repaint).
  */
-const STOCH_REVERSAL_PINE_BUILD = "v9";
+const STOCH_REVERSAL_PINE_BUILD = "v10";
 
 function stochReversalPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -346,27 +346,34 @@ useDivergence = input.bool(true, "Require stochastic divergence at the second ex
 divTolerance = input.float(5.0, "Divergence tolerance (stochastic points)", minval=0.0, step=1.0, tooltip="The second extreme only fails the divergence filter when its stochastic exceeds the first extreme's by more than this — 0 restores the strict lower-than/higher-than rule.")
 breakMarginAtr = input.float(0.15, "Decisive neckline break margin (ATR)", minval=0.0, step=0.05, tooltip="The confirming close must clear the neckline by this margin — marginal squeaks through the neckline in chop are where most fakeouts come from. Set 0 to disable.")
 maxConsumed = input.float(0.5, "Max move consumed at breakout entry", minval=0.1, maxval=1.0, step=0.05, tooltip="A breakout entry is skipped when the confirmation close has already covered more than this fraction of the measured move past the neckline — late confirmations leave a target that can't realistically be reached.")
-useEngulf   = input.bool(true, "Engulfing candle trigger at the second extreme", tooltip="An engulfing reversal candle right at the second top/bottom — where the stochastic tagged the extreme and hasn't swung to the opposite one — confirms the reversal early: entered at the close of the bar where both the candle and the pattern are known, well before the neckline break would confirm. Only active outside retest entry mode.")
-engulfWindow = input.int(10, "Max bars after the second extreme for the engulfing trigger", minval=1)
+useEngulf   = input.bool(true, "Reversal candle trigger at the second extreme", tooltip="An engulfing reversal candle — or a strong reversal close beyond the previous bar's extreme — right at the second top/bottom, where the stochastic tagged the extreme and hasn't swung to the opposite one, confirms the reversal early: entered at the close of the bar where both the candle and the pattern are known, well before the neckline break would confirm. Only active outside retest entry mode.")
+engulfWindow = input.int(10, "Max bars after the second extreme for the reversal-candle trigger", minval=1)
+stochWindow = input.int(3, "Bars around the second extreme the stochastic may tag it", minval=1, tooltip="The stochastic often bottoms/tops a few bars before the exact price extreme (divergence) — the extreme requirement passes if the stochastic tagged the level within this many bars of the second top/bottom.")
 
 // ── Stochastic + pivots ────────────────────────────────────────────────
 stochK = ta.sma(ta.stoch(close, high, low, stochLen), stochSmooth)
 atrValue = ta.atr(14)
 ph = ta.pivothigh(high, pivotLen, pivotLen)
 pl = ta.pivotlow(low, pivotLen, pivotLen)
-// stochastic near the pivot bar (a small window around the extreme)
-kNearHigh = math.max(nz(stochK[pivotLen - 1], 0), math.max(nz(stochK[pivotLen], 0), nz(stochK[pivotLen + 1], 0)))
-kNearLow  = math.min(nz(stochK[pivotLen - 1], 100), math.min(nz(stochK[pivotLen], 100), nz(stochK[pivotLen + 1], 100)))
-// engulfing reversal candle o bars back: a body engulfing the previous bar's opposite-coloured body
-bullEngulf(int o) => close[o] > open[o] and close[o + 1] < open[o + 1] and open[o] <= close[o + 1] and close[o] >= open[o + 1]
-bearEngulf(int o) => close[o] < open[o] and close[o + 1] > open[o + 1] and open[o] >= close[o + 1] and close[o] <= open[o + 1]
+// stochastic near the pivot bar (a window of stochWindow bars around the extreme)
+kNear(int w, bool wantHigh) =>
+    v = wantHigh ? 0.0 : 100.0
+    for j = math.max(pivotLen - w, 0) to pivotLen + w
+        v := wantHigh ? math.max(v, nz(stochK[j], 0)) : math.min(v, nz(stochK[j], 100))
+    v
+kNearHigh = kNear(stochWindow, true)
+kNearLow  = kNear(stochWindow, false)
+// reversal candle o bars back: a body engulfing the previous bar's opposite-coloured
+// body, or a strong reversal close beyond the previous bar's extreme
+bullEngulf(int o) => close[o] > open[o] and close[o + 1] < open[o + 1] and (close[o] > high[o + 1] or (open[o] <= close[o + 1] and close[o] >= open[o + 1]))
+bearEngulf(int o) => close[o] < open[o] and close[o + 1] > open[o + 1] and (close[o] < low[o + 1] or (open[o] >= close[o + 1] and close[o] <= open[o + 1]))
 // the stochastic tagged the pattern's extreme at some point between the second
 // extreme (extOff bars back, with the same window used to qualify it) and the
 // engulfing bar o bars back — and is not at the opposite extreme on that bar
 kAtExtreme(int o, int extOff, int d) =>
     wrongSideNow = d == -1 ? nz(stochK[o], 100) <= osLevel : nz(stochK[o], 0) >= obLevel
     ok = false
-    for j = o to extOff + 2
+    for j = o to extOff + stochWindow
         ok := ok or (d == -1 ? nz(stochK[j], 0) >= obLevel : nz(stochK[j], 100) <= osLevel)
     ok and not wrongSideNow
 // prior leg into a just-confirmed pivot: the range of the lookback window ending at the extreme bar

@@ -190,8 +190,8 @@ show("late engulfing, mirrored double bottom", mirror(engLate), "both");
 // an engulfing candle after price has dumped so hard the stochastic sits at the
 // OPPOSITE extreme (oversold on a double top): wrong side — must not confirm
 const engWrong = candles.slice(0, marks.awaiting).map((cd) => ({ ...cd }));
-engWrong[80] = c(80, 109.8, 107);
-engWrong[81] = c(81, 107, 105.4);
-engWrong[82] = c(82, 105.4, 105.7);
-engWrong[83] = c(83, 105.8, 105.3);
+engWrong[81] = c(81, 109.7, 107);
+engWrong[82] = c(82, 107, 105.4);
+engWrong[83] = c(83, 105.4, 105.6);
+engWrong[84] = c(84, 105.7, 105.2);
 show("wrong-side engulfing (stoch dumped to oversold) rejected", engWrong, "both");

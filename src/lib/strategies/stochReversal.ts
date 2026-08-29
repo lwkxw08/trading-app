@@ -70,7 +70,7 @@ const TOP_TOLERANCE_ATR = 0.75; // max distance between the two extremes
 const MIN_HEIGHT_ATR = 1; // min pattern height (extreme to neckline)
 const MAX_PATTERN_AGE_BARS = 120; // second extreme must be this recent
 const MAX_EXTREME_GAP_BARS = 80; // max bars between the two extremes
-const STOCH_WINDOW_BARS = 2; // stochastic extreme within +/- this of the second top/bottom
+const STOCH_WINDOW_BARS = 3; // stochastic extreme within +/- this of the second top/bottom
 const STOP_BUFFER_ATR = 0.5; // "some room" above/below the pattern extreme
 const MIN_RR = 1.5; // ensure a sensible R/R: at least this R when the measured move is nearer
 const TREND_LOOKBACK_BARS = 40; // window before the first extreme measured for the prior leg
@@ -129,11 +129,16 @@ function stochHoldsExtreme(
   return false;
 }
 
-/** A reversal candle whose body engulfs the previous bar's opposite-coloured body. */
+/** A reversal candle: body engulfs the previous bar's opposite-coloured body,
+ * or a strong reversal close beyond the previous bar's extreme. */
 function isEngulfing(prev: Candle, cur: Candle, bearish: boolean): boolean {
   return bearish
-    ? cur.close < cur.open && prev.close > prev.open && cur.open >= prev.close && cur.close <= prev.open
-    : cur.close > cur.open && prev.close < prev.open && cur.open <= prev.close && cur.close >= prev.open;
+    ? cur.close < cur.open &&
+        prev.close > prev.open &&
+        (cur.close < prev.low || (cur.open >= prev.close && cur.close <= prev.open))
+    : cur.close > cur.open &&
+        prev.close < prev.open &&
+        (cur.close > prev.high || (cur.open <= prev.close && cur.close >= prev.open));
 }
 
 /** Slow stochastic %K: raw %K smoothed with an SMA. */
