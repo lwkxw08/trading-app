@@ -26,6 +26,7 @@ import { TREND_BREAK_STRATEGY_NAME, type TrendBreakSetup } from "@/lib/strategie
 import { SESSION_OPEN_STRATEGY_NAME, type SessionOpenSetup } from "@/lib/strategies/sessionOpen";
 import { PULLBACK_VALUE_STRATEGY_NAME, type PullbackValueSetup } from "@/lib/strategies/pullbackValue";
 import { STOCH_REVERSAL_STRATEGY_NAME, type StochReversalSetup } from "@/lib/strategies/stochReversal";
+import { ENTRY_FIB, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibSetup } from "@/lib/strategies/trendlineFib";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
@@ -71,6 +72,9 @@ export default function AnalyzeSymbol() {
   const [pvLogged, setPvLogged] = useState(false);
   const [srSetup, setSrSetup] = useState<StochReversalSetup | null>(null);
   const [srLogged, setSrLogged] = useState(false);
+  const [tlSetup, setTlSetup] = useState<TrendlineFibSetup | null>(null);
+  const [tlSelected, setTlSelected] = useState(false);
+  const [tlLogged, setTlLogged] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
   const [news, setNews] = useState<NewsHeadline[]>([]);
@@ -169,6 +173,20 @@ export default function AnalyzeSymbol() {
       fetch(apiUrl(`/api/setups/stochreversal?symbol=${symbol}&tf=${tf}`))
         .then((r) => r.json())
         .then((d) => setSrSetup(d.setup ?? null))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, [symbol, tf]);
+
+  useEffect(() => {
+    setTlSetup(null);
+    setTlSelected(false);
+    setTlLogged(false);
+    const load = () =>
+      fetch(apiUrl(`/api/setups/trendlinefib?symbol=${symbol}&tf=${tf}`))
+        .then((r) => r.json())
+        .then((d) => setTlSetup(d.setup ?? null))
         .catch(() => {});
     load();
     const t = setInterval(load, 60_000);
@@ -320,6 +338,41 @@ export default function AnalyzeSymbol() {
     [symbol, tf, analysis],
   );
 
+  const logTlToJournal = useCallback(
+    (s: TrendlineFibSetup) => {
+      if (s.entry === null || s.stopLoss === null || s.takeProfit === null) return;
+      const trade: JournalTrade = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        symbol,
+        timeframe: tf,
+        direction: s.direction === "bullish" ? "long" : "short",
+        status: "open",
+        entryPrice: s.entry,
+        entryTime: Date.now(),
+        size: null,
+        stopLoss: s.stopLoss,
+        takeProfit: s.takeProfit,
+        strategyName: TRENDLINE_FIB_STRATEGY_NAME,
+        notes: `Logged from analysis card · ${s.touches}-touch ${s.priorTrend === "bearish" ? "falling resistance" : "rising support"} broken · fib 0 ${fmtPrice(s.swingPrice ?? 0)} → 1 ${fmtPrice(s.fibOne ?? 0)} · ${ENTRY_FIB} entry ${fmtPrice(s.entry)} · TP at ${s.targetFib} fib`,
+        snapshot: analysis
+          ? {
+              trendDirection: analysis.trend.direction,
+              htfDirection: analysis.higherTimeframeTrend?.direction,
+              rsi14: analysis.trend.rsi14,
+              confluenceScore: null,
+              factors: [],
+            }
+          : null,
+        exitPrice: null,
+        exitTime: null,
+        exitNotes: "",
+      };
+      saveTrades([trade, ...loadTrades()]);
+      setTlLogged(true);
+    },
+    [symbol, tf, analysis],
+  );
+
   const logSetupToJournal = useCallback(
     (s: HvnFvgPullback, key: string) => {
       const bull = s.direction === "bullish";
@@ -447,6 +500,23 @@ export default function AnalyzeSymbol() {
   }, [analysis, layers.volumeProfile]);
 
   const setupOverlay = useMemo<SetupOverlay | null>(() => {
+    if (tlSelected && tlSetup && tlSetup.entry !== null && tlSetup.stopLoss !== null && tlSetup.takeProfit !== null && tlSetup.fibOne !== null && tlSetup.breakTime !== null) {
+      return {
+        direction: tlSetup.direction,
+        impulseFromTime: tlSetup.trendline.fromTime,
+        impulseFromPrice: tlSetup.trendline.fromPrice,
+        impulseToTime: tlSetup.trendline.toTime,
+        impulseToPrice: tlSetup.trendline.toPrice,
+        zoneTop: Math.max(tlSetup.entry, tlSetup.fibOne),
+        zoneBottom: Math.min(tlSetup.entry, tlSetup.fibOne),
+        zoneFrom: tlSetup.breakTime,
+        target: tlSetup.takeProfit,
+        stopLoss: tlSetup.stopLoss,
+        entry: tlSetup.entry,
+        lineLabel: `${tlSetup.touches}-touch trendline`,
+        zoneLabel: `fib pullback · entry at ${ENTRY_FIB}`,
+      };
+    }
     if (tbSelected && tbSetup && tbSetup.fvg && tbSetup.entry !== null && tbSetup.stopLoss !== null && tbSetup.takeProfit !== null) {
       return {
         direction: tbSetup.direction,
@@ -477,7 +547,7 @@ export default function AnalyzeSymbol() {
       target: selectedSetup.target,
       stopLoss: selectedSetup.stopLoss,
     };
-  }, [selectedSetup, tbSelected, tbSetup]);
+  }, [selectedSetup, tbSelected, tbSetup, tlSelected, tlSetup]);
 
   const zones = useMemo<ZoneBox[]>(() => {
     if (!analysis) return [];
@@ -1065,6 +1135,86 @@ export default function AnalyzeSymbol() {
                     </button>
                     {srLogged && (
                       <Link href="/journal" className="text-[11px] text-accent hover:underline">
+                        View in Journal
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Trendline break + fib retracement setup */}
+          {tlSetup && (
+            <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
+              <h2 className="mb-2 font-semibold">{TRENDLINE_FIB_STRATEGY_NAME} · {tf}</h2>
+              <div
+                onClick={() => {
+                  if (tlSetup.entry !== null && tlSetup.state !== "invalidated" && tlSetup.state !== "completed") {
+                    setTlSelected((v) => !v);
+                  }
+                }}
+                className={`rounded-md border p-2 ${
+                  tlSetup.state === "invalidated" || tlSetup.state === "completed" || tlSetup.entry === null
+                    ? "border-edge opacity-80"
+                    : `cursor-pointer ${tlSelected ? "border-accent ring-1 ring-accent" : "border-edge hover:border-accent/50"}`
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className={`font-semibold ${tlSetup.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                    {tlSetup.direction === "bullish" ? "BUY setup" : "SELL setup"}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                      tlSetup.state === "awaiting_pullback" || tlSetup.state === "triggered"
+                        ? "bg-bull/15 text-bull"
+                        : tlSetup.state === "invalidated"
+                          ? "bg-bear/15 text-bear"
+                          : tlSetup.state === "completed"
+                            ? "bg-edge text-muted"
+                            : "bg-amber-500/15 text-amber-400"
+                    }`}
+                  >
+                    {tlSetup.state === "completed" ? "played out" : tlSetup.state.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  {tlSetup.priorTrend === "bearish" ? "Falling resistance" : "Rising support"} · {tlSetup.touches} touches
+                  {tlSetup.swingPrice !== null && tlSetup.fibOne !== null
+                    ? ` · fib 0 ${fmtPrice(tlSetup.swingPrice)} → 1 ${fmtPrice(tlSetup.fibOne)}`
+                    : ""}{" "}
+                  · {tlSetup.stateDetail}
+                </p>
+                {tlSetup.entry !== null && tlSetup.stopLoss !== null && tlSetup.takeProfit !== null && (
+                  <p className="mt-1 text-xs text-muted">
+                    Entry ({ENTRY_FIB} fib) {fmtPrice(tlSetup.entry)} · SL {fmtPrice(tlSetup.stopLoss)} · TP ({tlSetup.targetFib} fib){" "}
+                    {fmtPrice(tlSetup.takeProfit)}
+                  </p>
+                )}
+                {tlSetup.state === "awaiting_break" && (
+                  <p className="mt-1 text-[10px] text-amber-400">
+                    Forming — the setup only activates when a candle CLOSES through the trendline; updates every minute.
+                  </p>
+                )}
+                {tlSetup.entry !== null && tlSetup.state !== "invalidated" && tlSetup.state !== "completed" && (
+                  <p className="mt-1 text-[10px] text-accent">
+                    {tlSelected ? "Shown on chart — click to hide" : "Click to show on chart"}
+                  </p>
+                )}
+                {(tlSetup.state === "awaiting_pullback" || tlSetup.state === "triggered") && tlSetup.entry !== null && (
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        logTlToJournal(tlSetup);
+                      }}
+                      disabled={tlLogged}
+                      className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    >
+                      {tlLogged ? "Logged to Journal" : "Log to Journal"}
+                    </button>
+                    {tlLogged && (
+                      <Link href="/journal" className="text-[11px] text-accent hover:underline" onClick={(e) => e.stopPropagation()}>
                         View in Journal
                       </Link>
                     )}

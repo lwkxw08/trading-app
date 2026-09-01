@@ -89,7 +89,9 @@ export async function checkAlertRules(rules: AlertRule[]): Promise<{ events: Ale
               ? `${opp.symbol} ${opp.direction.toUpperCase()} Pullback to Value ready — entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`
               : rule.setup === "stochreversal"
                 ? `${opp.symbol} ${opp.direction.toUpperCase()} Stochastic Double ${opp.direction === "short" ? "Top" : "Bottom"} ready — entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`
-                : `${opp.symbol} ${opp.direction.toUpperCase()} setup on ${rule.tf} — score ${opp.score}, entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`,
+                : rule.setup === "trendlinefib"
+                  ? `${opp.symbol} ${opp.direction.toUpperCase()} Trendline Break + Fib ready — entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`
+                  : `${opp.symbol} ${opp.direction.toUpperCase()} setup on ${rule.tf} — score ${opp.score}, entry ${opp.entry}, SL ${opp.stopLoss}, TP ${opp.takeProfit}`,
       });
     }
   }

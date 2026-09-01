@@ -15,12 +15,14 @@ import { TREND_BREAK_STRATEGY_NAME, type TrendBreakWatch } from "@/lib/strategie
 import { SESSION_OPEN_STRATEGY_NAME, type SessionOpenWatch } from "@/lib/strategies/sessionOpen";
 import { PULLBACK_VALUE_STRATEGY_NAME, type PullbackValueWatch } from "@/lib/strategies/pullbackValue";
 import { STOCH_REVERSAL_STRATEGY_NAME, type StochReversalWatch } from "@/lib/strategies/stochReversal";
+import { TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibWatch } from "@/lib/strategies/trendlineFib";
 import type { Opportunity } from "@/lib/strategies/types";
 
 const TREND_BREAK_ID = "__trendbreak";
 const SESSION_OPEN_ID = "__sessionopen";
 const PULLBACK_VALUE_ID = "__pullbackvalue";
 const STOCH_REVERSAL_ID = "__stochreversal";
+const TRENDLINE_FIB_ID = "__trendlinefib";
 
 function oppKey(opp: Opportunity): string {
   return `${opp.symbol}-${opp.timeframe}-${opp.direction}-${opp.generatedAt}`;
@@ -43,6 +45,7 @@ export default function Scanner() {
   const [soWatching, setSoWatching] = useState<SessionOpenWatch[]>([]);
   const [pvWatching, setPvWatching] = useState<PullbackValueWatch[]>([]);
   const [srWatching, setSrWatching] = useState<StochReversalWatch[]>([]);
+  const [tlWatching, setTlWatching] = useState<TrendlineFibWatch[]>([]);
   const [alerted, setAlerted] = useState<Set<string>>(new Set());
   const [meta, setMeta] = useState<{ scanned: number; errors: number } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -67,6 +70,7 @@ export default function Scanner() {
     const sessionOpen = strategyId === SESSION_OPEN_ID;
     const pullbackValue = strategyId === PULLBACK_VALUE_ID;
     const stochReversal = strategyId === STOCH_REVERSAL_ID;
+    const trendlineFib = strategyId === TRENDLINE_FIB_ID;
     const strategyName = trendBreak
       ? TREND_BREAK_STRATEGY_NAME
       : sessionOpen
@@ -75,9 +79,11 @@ export default function Scanner() {
           ? PULLBACK_VALUE_STRATEGY_NAME
           : stochReversal
             ? STOCH_REVERSAL_STRATEGY_NAME
-            : saved
-              ? saved.strategy.name
-              : "Built-in confluence";
+            : trendlineFib
+              ? TRENDLINE_FIB_STRATEGY_NAME
+              : saved
+                ? saved.strategy.name
+                : "Built-in confluence";
     setScanStrategyName(strategyName);
     const request = saved
       ? fetch(apiUrl("/api/scan"), {
@@ -87,7 +93,7 @@ export default function Scanner() {
         })
       : fetch(
           apiUrl(
-            `/api/scan?${new URLSearchParams({ tf, market, ...(symbols.trim() ? { symbols: symbols.trim() } : {}), ...(trendBreak ? { setup: "trendbreak" } : {}), ...(sessionOpen ? { setup: "sessionopen" } : {}), ...(pullbackValue ? { setup: "pullbackvalue" } : {}), ...(stochReversal ? { setup: "stochreversal" } : {}) })}`,
+            `/api/scan?${new URLSearchParams({ tf, market, ...(symbols.trim() ? { symbols: symbols.trim() } : {}), ...(trendBreak ? { setup: "trendbreak" } : {}), ...(sessionOpen ? { setup: "sessionopen" } : {}), ...(pullbackValue ? { setup: "pullbackvalue" } : {}), ...(stochReversal ? { setup: "stochreversal" } : {}), ...(trendlineFib ? { setup: "trendlinefib" } : {}) })}`,
           ),
         );
     request
@@ -99,6 +105,7 @@ export default function Scanner() {
         setSoWatching(sessionOpen ? (d.watching ?? []) : []);
         setPvWatching(pullbackValue ? (d.watching ?? []) : []);
         setSrWatching(stochReversal ? (d.watching ?? []) : []);
+        setTlWatching(trendlineFib ? (d.watching ?? []) : []);
         setMeta({ scanned: d.scanned ?? 0, errors: d.errors ?? 0 });
         if (track) {
           const qualifying = opps.filter((o) => o.score >= minScore && (direction === "all" || o.direction === direction));
@@ -125,8 +132,9 @@ export default function Scanner() {
   const sessionOpenScan = scanStrategyName === SESSION_OPEN_STRATEGY_NAME;
   const pullbackValueScan = scanStrategyName === PULLBACK_VALUE_STRATEGY_NAME;
   const stochReversalScan = scanStrategyName === STOCH_REVERSAL_STRATEGY_NAME;
+  const trendlineFibScan = scanStrategyName === TRENDLINE_FIB_STRATEGY_NAME;
   const builtIn = scanStrategyName === "Built-in confluence";
-  const nearMisses = trendBreak || sessionOpenScan || pullbackValueScan || stochReversalScan
+  const nearMisses = trendBreak || sessionOpenScan || pullbackValueScan || stochReversalScan || trendlineFibScan
     ? []
     : opportunities.filter(
         (o) => o.score < minScore && o.score >= minScore - NEAR_MISS_MARGIN && (direction === "all" || o.direction === direction),
@@ -224,6 +232,27 @@ export default function Scanner() {
     [addAlert],
   );
 
+  const alertForTrendlineFibWatch = useCallback(
+    (w: TrendlineFibWatch) => {
+      addAlert(
+        {
+          id: uid(),
+          type: "setup",
+          enabled: true,
+          symbols: w.symbol,
+          tf: w.timeframe,
+          direction: w.direction === "bullish" ? "long" : "short",
+          minScore: 70,
+          setup: "trendlinefib",
+          cooldownMin: 60,
+          lastFired: {},
+        },
+        `tl-${w.symbol}`,
+      );
+    },
+    [addAlert],
+  );
+
   const alertForNearMiss = useCallback(
     (o: Opportunity) => {
       addAlert(
@@ -313,6 +342,7 @@ export default function Scanner() {
             <option value={SESSION_OPEN_ID}>{SESSION_OPEN_STRATEGY_NAME}</option>
             <option value={PULLBACK_VALUE_ID}>{PULLBACK_VALUE_STRATEGY_NAME}</option>
             <option value={STOCH_REVERSAL_ID}>{STOCH_REVERSAL_STRATEGY_NAME}</option>
+            <option value={TRENDLINE_FIB_ID}>{TRENDLINE_FIB_STRATEGY_NAME}</option>
             {savedStrategies.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.strategy.name}
@@ -493,6 +523,32 @@ export default function Scanner() {
                   <p className="mt-1 text-xs text-muted">{w.stateDetail}</p>
                   <button
                     onClick={() => alertForStochWatch(w)}
+                    disabled={alerted.has(key)}
+                    className="mt-2 rounded-md border border-edge px-2.5 py-1 text-[11px] font-semibold text-muted hover:border-accent hover:text-foreground disabled:opacity-60"
+                  >
+                    {alerted.has(key) ? "✓ Alert created" : "Alert when ready"}
+                  </button>
+                </div>
+              );
+            })}
+            {tlWatching.map((w) => {
+              const key = `tl-${w.symbol}`;
+              return (
+                <div key={key} className="rounded-lg border border-amber-500/40 bg-surface p-3 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="font-semibold">{w.symbol}</span>
+                    <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-semibold uppercase text-amber-400">
+                      {w.state.replace(/_/g, " ")}
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-accent">{TRENDLINE_FIB_STRATEGY_NAME}</p>
+                  <p className={`mt-1 text-xs font-semibold ${w.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                    {w.priorTrend === "bearish" ? "Falling resistance" : "Rising support"} · {w.touches} touches ·{" "}
+                    {w.direction === "bullish" ? "BUY on break" : "SELL on break"}
+                  </p>
+                  <p className="mt-1 text-xs text-muted">{w.stateDetail}</p>
+                  <button
+                    onClick={() => alertForTrendlineFibWatch(w)}
                     disabled={alerted.has(key)}
                     className="mt-2 rounded-md border border-edge px-2.5 py-1 text-[11px] font-semibold text-muted hover:border-accent hover:text-foreground disabled:opacity-60"
                   >

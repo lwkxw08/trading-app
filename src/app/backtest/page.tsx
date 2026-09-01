@@ -25,6 +25,7 @@ import { describeStopRule, describeTargetRule } from "@/lib/strategies/risk";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
 import { backtestStochReversal, DEFAULT_STOCH_REVERSAL_FILTERS, STOCH_REVERSAL_STRATEGY_NAME, type StochReversalBacktest, type StochReversalEntryMode, type StochReversalFilters } from "@/lib/strategies/stochReversal";
+import { backtestTrendlineFib, DEFAULT_FIB_TARGET, DEFAULT_TRENDLINE_FIB_FILTERS, ENTRY_FIB, FIB_TARGET_LEVELS, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibBacktest, type TrendlineFibFilters } from "@/lib/strategies/trendlineFib";
 
 // Backtests run in the browser: the server only supplies candle history
 // (pure I/O), so long simulations never hit the host's per-request CPU limit.
@@ -232,6 +233,30 @@ export default function BacktestPage() {
       .catch((e) => setSrError(e instanceof Error ? e.message : "backtest failed"))
       .finally(() => setSrLoading(false));
   }, [srSymbol, srTf, srBars, srEntryMode, srFilters]);
+
+  // Trendline Break + Fib Retracement backtest (dedicated, deliberately simple)
+  const [tlSymbol, setTlSymbol] = useState("BTCUSDT");
+  const [tlTf, setTlTf] = useState<Timeframe>("1h");
+  const [tlBars, setTlBars] = useState(1500);
+  const [tlTarget, setTlTarget] = useState(DEFAULT_FIB_TARGET);
+  const [tlFilters, setTlFilters] = useState<TrendlineFibFilters>(DEFAULT_TRENDLINE_FIB_FILTERS);
+  const [tlResult, setTlResult] = useState<TrendlineFibBacktest | null>(null);
+  const [tlLoading, setTlLoading] = useState(false);
+  const [tlError, setTlError] = useState<string | null>(null);
+
+  const runTrendlineFib = useCallback(() => {
+    setTlLoading(true);
+    setTlError(null);
+    setTlResult(null);
+    const sym = tlSymbol.toUpperCase();
+    fetchHistory(sym, tlTf, tlBars)
+      .then((h) => {
+        if (h.candles.length < 200) throw new Error("not enough history for this symbol/timeframe");
+        setTlResult(backtestTrendlineFib(sym, tlTf, h.candles, tlTarget, tlFilters));
+      })
+      .catch((e) => setTlError(e instanceof Error ? e.message : "backtest failed"))
+      .finally(() => setTlLoading(false));
+  }, [tlSymbol, tlTf, tlBars, tlTarget, tlFilters]);
 
   useEffect(() => {
     setSavedRuns(loadRuns());
@@ -1328,6 +1353,190 @@ export default function BacktestPage() {
                   <p className="text-xs text-muted">
                     No trades — patterns either never confirmed the reversal (no neckline break/CHoCH) or price never
                     retested the neckline entry after confirming.
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-lg border border-edge bg-surface p-4">
+            <h2 className="font-semibold">{TRENDLINE_FIB_STRATEGY_NAME} backtest</h2>
+            <p className="mt-1 text-xs text-muted">
+              Replays the dedicated detector exactly like live detection: a falling resistance or rising support
+              trendline with at least 3 pivot touches, respected between them (no candle close through the line) → a
+              candle CLOSING through the line (a wick through that closes back on the trend side never counts) → fib
+              anchored from the trend&apos;s swing extreme (0) to the break candle (1) → entry at the {ENTRY_FIB} pullback on
+              the break side → SL just beyond the swing → TP at the fib level you pick. A close back through the line, a
+              close beyond the swing, or 80 bars without a fill cancels the entry. Confirmation filters (toggle to
+              compare): a decisive break margin, a strong directional break candle, and RSI momentum agreement. No
+              look-ahead: touch pivots only count once confirmable; a bar spanning both SL and TP counts as a stop.
+            </p>
+            <div className="mt-2 flex flex-wrap items-end gap-3 text-sm">
+              <label className="block">
+                <span className="text-xs text-muted">Symbol</span>
+                <div className="mt-1">
+                  <SymbolInput value={tlSymbol} onChange={setTlSymbol} className={`${inputCls} w-40 font-mono uppercase`} />
+                </div>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">Timeframe</span>
+                <select value={tlTf} onChange={(e) => setTlTf(e.target.value as Timeframe)} className={`${inputCls} mt-1 block`}>
+                  {TIMEFRAMES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">TP fib level</span>
+                <select
+                  value={tlTarget}
+                  onChange={(e) => setTlTarget(Number(e.target.value))}
+                  className={`${inputCls} mt-1 block`}
+                >
+                  {FIB_TARGET_LEVELS.map((f) => (
+                    <option key={f} value={f}>
+                      {f}{f === DEFAULT_FIB_TARGET ? " (default)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="block text-xs">
+                <span className="text-muted">Confirmation filters</span>
+                <div className="mt-1 flex flex-wrap gap-3">
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={tlFilters.decisiveBreak}
+                      onChange={(e) => setTlFilters({ ...tlFilters, decisiveBreak: e.target.checked })}
+                    />
+                    Decisive break
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={tlFilters.strongBreakCandle}
+                      onChange={(e) => setTlFilters({ ...tlFilters, strongBreakCandle: e.target.checked })}
+                    />
+                    Strong break candle
+                  </label>
+                  <label className="flex items-center gap-1">
+                    <input
+                      type="checkbox"
+                      checked={tlFilters.momentumFilter}
+                      onChange={(e) => setTlFilters({ ...tlFilters, momentumFilter: e.target.checked })}
+                    />
+                    RSI momentum
+                  </label>
+                </div>
+              </div>
+              <label className="block">
+                <span className="text-xs text-muted">History: {tlBars} bars</span>
+                <input
+                  type="range"
+                  min={300}
+                  max={3000}
+                  step={100}
+                  value={tlBars}
+                  onChange={(e) => setTlBars(Number(e.target.value))}
+                  className="mt-2 block w-36"
+                />
+              </label>
+              <button
+                onClick={runTrendlineFib}
+                disabled={tlLoading}
+                className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {tlLoading ? "Running…" : "Run trendline backtest"}
+              </button>
+            </div>
+            {tlError && <p className="mt-2 text-xs text-bear">{tlError}</p>}
+            {tlResult && (
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Breaks</p>
+                    <p className="font-semibold">{tlResult.breaks}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Trades</p>
+                    <p className="font-semibold">{tlResult.trades.length}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Filtered</p>
+                    <p className="font-semibold">{tlResult.filtered}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">No fill</p>
+                    <p className="font-semibold">{tlResult.noFill}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Win rate</p>
+                    <p className="font-semibold">{tlResult.trades.length > 0 ? `${tlResult.winRatePct}%` : "—"}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Total R</p>
+                    <p className={`font-semibold ${tlResult.totalR > 0 ? "text-bull" : tlResult.totalR < 0 ? "text-bear" : ""}`}>
+                      {tlResult.totalR >= 0 ? "+" : ""}
+                      {tlResult.totalR}R
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Avg R</p>
+                    <p className="font-semibold">{tlResult.trades.length > 0 ? `${tlResult.avgR}R` : "—"}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Max DD</p>
+                    <p className="font-semibold">{tlResult.maxDrawdownR}R</p>
+                  </div>
+                </div>
+                {tlResult.openAtEnd > 0 && (
+                  <p className="text-xs text-muted">{tlResult.openAtEnd} trade(s) still open at the end of the window (excluded from stats).</p>
+                )}
+                {tlResult.trades.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-muted">
+                        <tr>
+                          <th className="py-1 pr-3">Entry time</th>
+                          <th className="py-1 pr-3">Direction</th>
+                          <th className="py-1 pr-3">Touches</th>
+                          <th className="py-1 pr-3">Entry ({ENTRY_FIB})</th>
+                          <th className="py-1 pr-3">SL</th>
+                          <th className="py-1 pr-3">TP ({tlResult.trades[0]?.targetFib ?? tlTarget})</th>
+                          <th className="py-1 pr-3">Exit</th>
+                          <th className="py-1 pr-3">Reason</th>
+                          <th className="py-1">R</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {tlResult.trades.map((t, i) => (
+                          <tr key={i} className="border-t border-edge">
+                            <td className="py-1 pr-3 whitespace-nowrap">{fmtTime(t.entryTime)}</td>
+                            <td className={`py-1 pr-3 font-semibold ${t.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                              {t.direction === "bullish" ? "RESISTANCE BREAK · LONG" : "SUPPORT BREAK · SHORT"}
+                            </td>
+                            <td className="py-1 pr-3">{t.touches}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.entry)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.stopLoss)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.takeProfit)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.exitPrice)}</td>
+                            <td className="py-1 pr-3 uppercase">{t.exitReason}</td>
+                            <td className={`py-1 font-mono ${t.rMultiple > 0 ? "text-bull" : t.rMultiple < 0 ? "text-bear" : ""}`}>
+                              {t.rMultiple >= 0 ? "+" : ""}
+                              {t.rMultiple.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted">
+                    No trades — either no 3-touch trendline broke with a candle close in this window, the confirmation
+                    filters rejected the breaks, or price never pulled back to the {ENTRY_FIB} entry before running off or
+                    closing back through the line.
                   </p>
                 )}
               </div>

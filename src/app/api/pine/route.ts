@@ -5,7 +5,7 @@ import { generatePineScript } from "@/lib/pine/templates";
 export const runtime = "edge";
 
 const schema = z.object({
-  kind: z.enum(["ema_cross", "rsi_reversal", "fvg_signals", "macd_momentum", "trend_break", "stoch_reversal"]),
+  kind: z.enum(["ema_cross", "rsi_reversal", "fvg_signals", "macd_momentum", "trend_break", "stoch_reversal", "trendline_fib"]),
   name: z.string().min(1).max(60),
   fastLength: z.number().int().min(2).max(500).optional(),
   slowLength: z.number().int().min(3).max(500).optional(),
@@ -15,6 +15,7 @@ const schema = z.object({
   riskPercent: z.number().min(0.1).max(10).optional(),
   atrStopMultiplier: z.number().min(0.5).max(10).optional(),
   rewardMultiple: z.number().min(0.5).max(10).optional(),
+  targetFib: z.number().min(0.5).max(10).optional(),
 });
 
 export async function POST(req: NextRequest) {

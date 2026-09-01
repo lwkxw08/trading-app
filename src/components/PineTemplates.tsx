@@ -16,6 +16,7 @@ export default function PineTemplates() {
   const [riskPercent, setRiskPercent] = useState(1);
   const [atrStopMultiplier, setAtrStopMultiplier] = useState(1.5);
   const [rewardMultiple, setRewardMultiple] = useState(2);
+  const [targetFib, setTargetFib] = useState(2.618);
   const [script, setScript] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -38,6 +39,7 @@ export default function PineTemplates() {
         riskPercent,
         atrStopMultiplier,
         rewardMultiple,
+        targetFib,
       }),
     })
       .then(async (r) => {
@@ -47,7 +49,7 @@ export default function PineTemplates() {
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [kind, name, fastLength, slowLength, rsiLength, rsiOversold, rsiOverbought, riskPercent, atrStopMultiplier, rewardMultiple]);
+  }, [kind, name, fastLength, slowLength, rsiLength, rsiOversold, rsiOverbought, riskPercent, atrStopMultiplier, rewardMultiple, targetFib]);
 
   const copy = useCallback(() => {
     if (!script) return;
@@ -109,10 +111,14 @@ export default function PineTemplates() {
               </>
             )}
             <Num label="Risk %" value={riskPercent} onChange={setRiskPercent} step={0.1} />
-            {kind !== "trend_break" && kind !== "stoch_reversal" && (
+            {kind !== "trend_break" && kind !== "stoch_reversal" && kind !== "trendline_fib" && (
               <Num label="ATR stop ×" value={atrStopMultiplier} onChange={setAtrStopMultiplier} step={0.25} />
             )}
-            <Num label={kind === "stoch_reversal" ? "Min reward (R)" : "Reward (R)"} value={rewardMultiple} onChange={setRewardMultiple} step={0.5} />
+            {kind === "trendline_fib" ? (
+              <Num label="Target fib (TP)" value={targetFib} onChange={setTargetFib} step={0.001} />
+            ) : (
+              <Num label={kind === "stoch_reversal" ? "Min reward (R)" : "Reward (R)"} value={rewardMultiple} onChange={setRewardMultiple} step={0.5} />
+            )}
           </div>
 
           <button
