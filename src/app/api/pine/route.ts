@@ -16,6 +16,7 @@ const schema = z.object({
   atrStopMultiplier: z.number().min(0.5).max(10).optional(),
   rewardMultiple: z.number().min(0.5).max(10).optional(),
   targetFib: z.number().min(0.5).max(10).optional(),
+  maxPullbackBars: z.number().int().min(2).max(200).optional(),
 });
 
 export async function POST(req: NextRequest) {

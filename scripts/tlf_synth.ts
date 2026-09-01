@@ -7,6 +7,7 @@ import {
   backtestTrendlineFib,
   detectTrendlineFibSetup,
   DEFAULT_FIB_TARGET,
+  DEFAULT_MAX_PULLBACK_BARS,
   DEFAULT_TRENDLINE_FIB_FILTERS,
   ENTRY_FIB,
 } from "../src/lib/strategies/trendlineFib";
@@ -189,7 +190,49 @@ const lineAt = (i: number) => 180 - 0.8 * (i - 40); // resistance value at candl
   }
 }
 
-// ── 8. Backtest: full round trip in both directions ──────────────────────
+// ── 8. Max pullback wait: late 0.618 fills are invalidated ──────────────
+{
+  const base = [...WARMUP, ...DOWN];
+  const lv = lineAt(base.length);
+  base.push({ o: lv - 6, h: lv + 7, l: lv - 6.5, c: lv + 6 }); // break
+  const armed = detectTrendlineFibSetup(toCandles(base));
+  if (armed && armed.entry !== null) {
+    const e = armed.entry;
+    // hover bars: stay above the falling line and above the entry, no fill
+    const hover = (): Bar => ({ o: lv + 5, h: lv + 6.5, l: e + 1, c: lv + 5 });
+    const fill = (): Bar => ({ o: lv + 5, h: lv + 5.5, l: e - 0.2, c: e + 0.5 });
+
+    const quick = [...base, hover(), hover(), fill()];
+    const sQuick = detectTrendlineFibSetup(toCandles(quick));
+    check("pullback filling within 3 candles triggers", sQuick !== null && sQuick.state === "triggered", `state=${sQuick?.state ?? "null"}`);
+
+    const slow = [...base];
+    for (let k = 0; k < 11; k++) slow.push(hover());
+    slow.push(fill());
+    const sSlow = detectTrendlineFibSetup(toCandles(slow));
+    check("pullback filling on candle 12 still triggers (default 15)", sSlow !== null && sSlow.state === "triggered", `state=${sSlow?.state ?? "null"}`);
+
+    const late = [...base];
+    for (let k = 0; k < DEFAULT_MAX_PULLBACK_BARS + 1; k++) late.push(hover());
+    late.push(fill());
+    const sLate = detectTrendlineFibSetup(toCandles(late));
+    check(
+      `pullback after ${DEFAULT_MAX_PULLBACK_BARS} candles is invalidated`,
+      sLate !== null && sLate.state === "invalidated" && sLate.stateDetail.includes("Pullback took too long"),
+      `state=${sLate?.state ?? "null"} detail=${sLate?.stateDetail ?? ""}`,
+    );
+
+    const sCustom = detectTrendlineFibSetup(toCandles(late), DEFAULT_FIB_TARGET, DEFAULT_TRENDLINE_FIB_FILTERS, 30);
+    check("raising the max wait to 30 accepts the same late fill", sCustom !== null && sCustom.state === "triggered", `state=${sCustom?.state ?? "null"}`);
+
+    const btLate = backtestTrendlineFib("TEST", "1h", toCandles(late));
+    check("backtest skips the late-pullback trade as no-fill", btLate.trades.length === 0 && btLate.noFill >= 1, `trades=${btLate.trades.length} noFill=${btLate.noFill}`);
+  } else {
+    check("max-pullback scaffold arms", false, `state=${armed?.state ?? "null"}`);
+  }
+}
+
+// ── 9. Backtest: full round trip in both directions ──────────────────────
 {
   const bars = [...WARMUP, ...DOWN];
   const breakIdx = bars.length;

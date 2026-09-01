@@ -15,6 +15,8 @@ export interface PineConfig {
   rewardMultiple?: number;
   /** trendline_fib: fib extension level for the TP (2.618 default) */
   targetFib?: number;
+  /** trendline_fib: max candles to wait for the 0.618 pullback after the break (15 default) */
+  maxPullbackBars?: number;
 }
 
 export const PINE_TEMPLATES: { kind: PineStrategyKind; label: string; description: string }[] = [
@@ -723,11 +725,12 @@ sellSignal = ta.crossunder(hist, 0) and close < trendEma
  * selectable fib extension (2.618 default). Pivots confirm pivotLen bars
  * later (no repaint).
  */
-const TRENDLINE_FIB_PINE_BUILD = "v1";
+const TRENDLINE_FIB_PINE_BUILD = "v2";
 
 function trendlineFibPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
   const targetFib = cfg.targetFib ?? 2.618;
+  const maxPullbackBars = cfg.maxPullbackBars ?? 15;
 
   return `//@version=6
 indicator("${sanitize(cfg.name)} [${TRENDLINE_FIB_PINE_BUILD}]", overlay=true, max_lines_count=500, max_bars_back=1000)
@@ -751,7 +754,7 @@ minSpanAtr  = input.float(2.0, "Min trend leg covered by the line (ATR)", minval
 entryFib    = input.float(0.618, "Entry fib level", minval=0.1, maxval=0.9, step=0.001)
 targetFib   = input.float(${targetFib}, "Target fib level (TP)", minval=0.5, step=0.001, tooltip="Fib extension used for the take profit: 1.0, 1.618, 2.618 (default), 3.618, 4.236…")
 slBufAtr    = input.float(0.25, "SL buffer beyond the fib 0 swing (ATR)", minval=0.0, step=0.05)
-expiryBars  = input.int(80, "Cancel unfilled entries after (bars)", minval=5)
+expiryBars  = input.int(${maxPullbackBars}, "Max candles to wait for the pullback", minval=2, tooltip="A clean setup pulls back to the entry fib promptly after the break. If the entry hasn't filled within this many candles, the setup is invalidated.")
 useDecisive = input.bool(true, "Decisive break (close must clear the line by the margin)", tooltip="The break close must clear the trendline by the margin below — marginal squeaks through the line are where most fakeouts come from. A close through the line without the margin still ends the trendline (it is no longer respected), it just doesn't arm a trade.")
 breakMargin = input.float(0.15, "Decisive break margin (ATR)", minval=0.0, step=0.05)
 useStrong   = input.bool(true, "Strong break candle", tooltip="The break candle must be a directional candle: correct colour with a body at least half its range.")

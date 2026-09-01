@@ -25,7 +25,7 @@ import { describeStopRule, describeTargetRule } from "@/lib/strategies/risk";
 import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
 import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
 import { backtestStochReversal, DEFAULT_STOCH_REVERSAL_FILTERS, STOCH_REVERSAL_STRATEGY_NAME, type StochReversalBacktest, type StochReversalEntryMode, type StochReversalFilters } from "@/lib/strategies/stochReversal";
-import { backtestTrendlineFib, DEFAULT_FIB_TARGET, DEFAULT_TRENDLINE_FIB_FILTERS, ENTRY_FIB, FIB_TARGET_LEVELS, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibBacktest, type TrendlineFibFilters } from "@/lib/strategies/trendlineFib";
+import { backtestTrendlineFib, DEFAULT_FIB_TARGET, DEFAULT_MAX_PULLBACK_BARS, DEFAULT_TRENDLINE_FIB_FILTERS, ENTRY_FIB, FIB_TARGET_LEVELS, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibBacktest, type TrendlineFibFilters } from "@/lib/strategies/trendlineFib";
 
 // Backtests run in the browser: the server only supplies candle history
 // (pure I/O), so long simulations never hit the host's per-request CPU limit.
@@ -239,6 +239,7 @@ export default function BacktestPage() {
   const [tlTf, setTlTf] = useState<Timeframe>("1h");
   const [tlBars, setTlBars] = useState(1500);
   const [tlTarget, setTlTarget] = useState(DEFAULT_FIB_TARGET);
+  const [tlMaxWait, setTlMaxWait] = useState(DEFAULT_MAX_PULLBACK_BARS);
   const [tlFilters, setTlFilters] = useState<TrendlineFibFilters>(DEFAULT_TRENDLINE_FIB_FILTERS);
   const [tlResult, setTlResult] = useState<TrendlineFibBacktest | null>(null);
   const [tlLoading, setTlLoading] = useState(false);
@@ -252,11 +253,11 @@ export default function BacktestPage() {
     fetchHistory(sym, tlTf, tlBars)
       .then((h) => {
         if (h.candles.length < 200) throw new Error("not enough history for this symbol/timeframe");
-        setTlResult(backtestTrendlineFib(sym, tlTf, h.candles, tlTarget, tlFilters));
+        setTlResult(backtestTrendlineFib(sym, tlTf, h.candles, tlTarget, tlFilters, tlMaxWait));
       })
       .catch((e) => setTlError(e instanceof Error ? e.message : "backtest failed"))
       .finally(() => setTlLoading(false));
-  }, [tlSymbol, tlTf, tlBars, tlTarget, tlFilters]);
+  }, [tlSymbol, tlTf, tlBars, tlTarget, tlFilters, tlMaxWait]);
 
   useEffect(() => {
     setSavedRuns(loadRuns());
@@ -1367,7 +1368,8 @@ export default function BacktestPage() {
               candle CLOSING through the line (a wick through that closes back on the trend side never counts) → fib
               anchored from the trend&apos;s swing extreme (0) to the break candle (1) → entry at the {ENTRY_FIB} pullback on
               the break side → SL just beyond the swing → TP at the fib level you pick. A close back through the line, a
-              close beyond the swing, or 80 bars without a fill cancels the entry. Confirmation filters (toggle to
+              close beyond the swing, or the pullback taking longer than the max wait (default {DEFAULT_MAX_PULLBACK_BARS}{" "}
+              candles, adjustable below) cancels the entry. Confirmation filters (toggle to
               compare): a decisive break margin, a strong directional break candle, and RSI momentum agreement. No
               look-ahead: touch pivots only count once confirmable; a bar spanning both SL and TP counts as a stop.
             </p>
@@ -1401,6 +1403,17 @@ export default function BacktestPage() {
                     </option>
                   ))}
                 </select>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">Max pullback wait (candles)</span>
+                <input
+                  type="number"
+                  min={2}
+                  max={200}
+                  value={tlMaxWait}
+                  onChange={(e) => setTlMaxWait(Math.max(2, Math.round(Number(e.target.value) || DEFAULT_MAX_PULLBACK_BARS)))}
+                  className={`${inputCls} mt-1 block`}
+                />
               </label>
               <div className="block text-xs">
                 <span className="text-muted">Confirmation filters</span>

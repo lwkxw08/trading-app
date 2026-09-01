@@ -61,6 +61,8 @@ export interface TrendlineFibSetup {
 export const FIB_TARGET_LEVELS = [1, 1.272, 1.618, 2, 2.618, 3, 3.618, 4.236] as const;
 export const DEFAULT_FIB_TARGET = 2.618;
 export const ENTRY_FIB = 0.618;
+/** a clean setup pulls back to the 0.618 promptly — waiting longer invalidates */
+export const DEFAULT_MAX_PULLBACK_BARS = 15;
 
 const SWING_LOOKBACK = 5; // pivots confirm this many bars after the extreme
 const MIN_TOUCHES = 3;
@@ -71,7 +73,6 @@ const MIN_TREND_SPAN_ATR = 2; // the line must cover a genuine trend leg
 const BREAK_MARGIN_ATR = 0.15; // decisive break: the close must clear the line by this
 const STRONG_BODY_RATIO = 0.5; // strong break candle: body at least this fraction of its range
 const SL_BUFFER_ATR = 0.25; // "just outside" the swing extreme
-const ENTRY_EXPIRY_BARS = 80; // unfilled 0.618 entries expire
 const MAX_LINE_AGE_BARS = 60; // a forming line is only watched while its last touch is recent
 
 /** Confirmation checks that the price action is heading in the break direction (all on by default). */
@@ -234,6 +235,7 @@ export function detectTrendlineFibSetup(
   candles: Candle[],
   targetFib: number = DEFAULT_FIB_TARGET,
   filters: TrendlineFibFilters = DEFAULT_TRENDLINE_FIB_FILTERS,
+  maxPullbackBars: number = DEFAULT_MAX_PULLBACK_BARS,
 ): TrendlineFibSetup | null {
   if (candles.length < 80) return null;
   const atr14 = atr(candles, 14);
@@ -370,9 +372,9 @@ export function detectTrendlineFibSetup(
         stateDetail = "Price closed beyond the fib 0 swing before the entry filled";
         break;
       }
-      if (i - breakIdx > ENTRY_EXPIRY_BARS) {
+      if (i - breakIdx > maxPullbackBars) {
         state = "invalidated";
-        stateDetail = "Unfilled fib entry expired";
+        stateDetail = `Pullback took too long — the ${ENTRY_FIB} fib did not fill within ${maxPullbackBars} candles of the break`;
         break;
       }
       // the entry must be on the break side of the (extended) trendline
@@ -459,6 +461,7 @@ export function backtestTrendlineFib(
   candles: Candle[],
   targetFib: number = DEFAULT_FIB_TARGET,
   filters: TrendlineFibFilters = DEFAULT_TRENDLINE_FIB_FILTERS,
+  maxPullbackBars: number = DEFAULT_MAX_PULLBACK_BARS,
 ): TrendlineFibBacktest {
   const n = candles.length;
   const atr14 = atr(candles, 14);
@@ -513,7 +516,7 @@ export function backtestTrendlineFib(
       const lv = lineValueAt(line, i);
       if (bullish ? c.close < lv : c.close > lv) break;
       if (bullish ? c.close < levels.stopLoss : c.close > levels.stopLoss) break;
-      if (i - breakIdx > ENTRY_EXPIRY_BARS) break;
+      if (i - breakIdx > maxPullbackBars) break;
       const entryOnBreakSide = bullish ? levels.entry >= lv : levels.entry <= lv;
       if (entryOnBreakSide && (bullish ? c.low <= levels.entry : c.high >= levels.entry)) {
         entryIdx = i;

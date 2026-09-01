@@ -17,6 +17,7 @@ export default function PineTemplates() {
   const [atrStopMultiplier, setAtrStopMultiplier] = useState(1.5);
   const [rewardMultiple, setRewardMultiple] = useState(2);
   const [targetFib, setTargetFib] = useState(2.618);
+  const [maxPullbackBars, setMaxPullbackBars] = useState(15);
   const [script, setScript] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -40,6 +41,7 @@ export default function PineTemplates() {
         atrStopMultiplier,
         rewardMultiple,
         targetFib,
+        maxPullbackBars,
       }),
     })
       .then(async (r) => {
@@ -49,7 +51,7 @@ export default function PineTemplates() {
       })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [kind, name, fastLength, slowLength, rsiLength, rsiOversold, rsiOverbought, riskPercent, atrStopMultiplier, rewardMultiple, targetFib]);
+  }, [kind, name, fastLength, slowLength, rsiLength, rsiOversold, rsiOverbought, riskPercent, atrStopMultiplier, rewardMultiple, targetFib, maxPullbackBars]);
 
   const copy = useCallback(() => {
     if (!script) return;
@@ -115,7 +117,10 @@ export default function PineTemplates() {
               <Num label="ATR stop ×" value={atrStopMultiplier} onChange={setAtrStopMultiplier} step={0.25} />
             )}
             {kind === "trendline_fib" ? (
-              <Num label="Target fib (TP)" value={targetFib} onChange={setTargetFib} step={0.001} />
+              <>
+                <Num label="Target fib (TP)" value={targetFib} onChange={setTargetFib} step={0.001} />
+                <Num label="Max pullback wait (candles)" value={maxPullbackBars} onChange={setMaxPullbackBars} step={1} />
+              </>
             ) : (
               <Num label={kind === "stoch_reversal" ? "Min reward (R)" : "Reward (R)"} value={rewardMultiple} onChange={setRewardMultiple} step={0.5} />
             )}

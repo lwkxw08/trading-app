@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getProviderForSymbol } from "@/lib/market/registry";
 import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
-import { DEFAULT_FIB_TARGET, detectTrendlineFibSetup } from "@/lib/strategies/trendlineFib";
+import { DEFAULT_FIB_TARGET, DEFAULT_MAX_PULLBACK_BARS, DEFAULT_TRENDLINE_FIB_FILTERS, detectTrendlineFibSetup } from "@/lib/strategies/trendlineFib";
 
 export const runtime = "edge";
 
@@ -12,6 +12,8 @@ export async function GET(req: NextRequest) {
   const tf: Timeframe = (TIMEFRAMES as readonly string[]).includes(tfParam) ? (tfParam as Timeframe) : "1h";
   const targetParam = Number(req.nextUrl.searchParams.get("target"));
   const targetFib = Number.isFinite(targetParam) && targetParam > 0 ? targetParam : DEFAULT_FIB_TARGET;
+  const maxWaitParam = Number(req.nextUrl.searchParams.get("maxwait"));
+  const maxPullbackBars = Number.isInteger(maxWaitParam) && maxWaitParam >= 2 ? maxWaitParam : DEFAULT_MAX_PULLBACK_BARS;
 
   try {
     const provider = getProviderForSymbol(symbol);
@@ -19,7 +21,7 @@ export async function GET(req: NextRequest) {
     if (candles.length < 80) {
       return NextResponse.json({ error: "not enough data" }, { status: 502 });
     }
-    const setup = detectTrendlineFibSetup(candles, targetFib);
+    const setup = detectTrendlineFibSetup(candles, targetFib, DEFAULT_TRENDLINE_FIB_FILTERS, maxPullbackBars);
     return NextResponse.json({ symbol: symbol.toUpperCase(), tf, setup });
   } catch (e) {
     return NextResponse.json({ error: e instanceof Error ? e.message : "detection failed" }, { status: 502 });
