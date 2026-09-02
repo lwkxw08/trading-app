@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import PineTemplates from "@/components/PineTemplates";
+import RiskRulesEditor from "@/components/RiskRulesEditor";
 import SymbolInput from "@/components/SymbolInput";
 import { apiUrl } from "@/components/api";
 import { fmtPrice } from "@/components/format";
@@ -9,7 +10,7 @@ import { TIMEFRAMES, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomEvaluation, type CustomStrategy } from "@/lib/strategies/custom";
 import { STRATEGY_PRESETS } from "@/lib/strategies/presets";
 import { describeStopRule, describeTargetRule, type RiskSettings, type StopRule, type TargetRule } from "@/lib/strategies/risk";
-import { addSavedStrategy, deleteSavedStrategy, loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
+import { addSavedStrategy, deleteSavedStrategy, loadSavedStrategies, updateSavedStrategy, type SavedStrategy } from "@/lib/strategies/savedStore";
 import {
   METRIC_LIBRARY,
   describeUserCondition,
@@ -46,6 +47,8 @@ export default function StrategyLab() {
   const [copied, setCopied] = useState(false);
   const [saved, setSaved] = useState<SavedStrategy[]>([]);
   const [justSaved, setJustSaved] = useState(false);
+  const [loadedId, setLoadedId] = useState<string | null>(null);
+  const [justUpdated, setJustUpdated] = useState(false);
   const [userConds, setUserConds] = useState<UserCondition[]>([]);
   const [userStates, setUserStates] = useState<Record<string, ConditionState>>({});
   const [editId, setEditId] = useState<string | null>(null);
@@ -155,8 +158,16 @@ export default function StrategyLab() {
     setTimeout(() => setJustSaved(false), 2000);
   }, [strategy]);
 
+  const updateStrategy = useCallback(() => {
+    if (!loadedId) return;
+    setSaved(updateSavedStrategy(loadedId, strategy));
+    setJustUpdated(true);
+    setTimeout(() => setJustUpdated(false), 2000);
+  }, [loadedId, strategy]);
+
   const loadStrategy = useCallback(
-    (s: CustomStrategy) => {
+    (s: CustomStrategy, id: string | null = null) => {
+      setLoadedId(id);
       setName(s.name);
       setMinScore(s.minScore);
       setConditions(
@@ -268,13 +279,23 @@ export default function StrategyLab() {
                   onChange={(e) => setName(e.target.value)}
                   className="w-52 rounded-md border border-edge bg-background px-2 py-1 text-sm outline-none focus:border-accent"
                 />
+                {loadedId && saved.some((s) => s.id === loadedId) && (
+                  <button
+                    onClick={updateStrategy}
+                    disabled={enabledCount === 0}
+                    className="rounded-md bg-accent px-3 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    title="Overwrite the loaded saved strategy with the current settings"
+                  >
+                    {justUpdated ? "Updated ✓" : "Update strategy"}
+                  </button>
+                )}
                 <button
                   onClick={saveStrategy}
                   disabled={enabledCount === 0}
                   className="rounded-md border border-edge px-3 py-1 text-xs font-semibold hover:bg-edge disabled:opacity-50"
                   title="Save to your strategy library — used by the Backtest tab's comparison matrix"
                 >
-                  {justSaved ? "Saved ✓" : "Save strategy"}
+                  {justSaved ? "Saved ✓" : loadedId ? "Save as new" : "Save strategy"}
                 </button>
               </div>
             </div>
@@ -485,131 +506,8 @@ export default function StrategyLab() {
               <p className="mt-1 text-xs text-muted">
                 How this strategy places its stop-loss and target on every signal (live evaluation, scanner and backtests).
               </p>
-              <div className="mt-2 grid gap-3 sm:grid-cols-2">
-                <div>
-                  <label className="text-xs text-muted">Stop-loss</label>
-                  <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <select
-                      value={stopRule.type}
-                      onChange={(e) => {
-                        const t = e.target.value as StopRule["type"];
-                        setStopRule(
-                          t === "default"
-                            ? { type: "default" }
-                            : t === "atr"
-                              ? { type: "atr", multiple: 1.5 }
-                              : t === "percent"
-                                ? { type: "percent", percent: 1 }
-                                : t === "swing"
-                                  ? { type: "swing", bufferAtr: 0.25 }
-                                  : { type: "hvn", bufferAtr: 0.25 },
-                        );
-                      }}
-                      className="rounded-md border border-edge bg-background px-2 py-1 text-xs outline-none"
-                    >
-                      <option value="default">Structure default (beyond swing)</option>
-                      <option value="swing">Beyond recent swing low/high + buffer</option>
-                      <option value="hvn">Beyond nearest HVN + buffer</option>
-                      <option value="atr">Fixed ATR multiple</option>
-                      <option value="percent">Fixed % from entry</option>
-                    </select>
-                    {stopRule.type === "atr" && (
-                      <span className="flex items-center gap-1 text-xs">
-                        <input
-                          type="number"
-                          step="0.1"
-                          min={0.1}
-                          value={stopRule.multiple}
-                          onChange={(e) => setStopRule({ type: "atr", multiple: Number(e.target.value) })}
-                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
-                        />
-                        × ATR
-                      </span>
-                    )}
-                    {stopRule.type === "percent" && (
-                      <span className="flex items-center gap-1 text-xs">
-                        <input
-                          type="number"
-                          step="0.1"
-                          min={0.05}
-                          value={stopRule.percent}
-                          onChange={(e) => setStopRule({ type: "percent", percent: Number(e.target.value) })}
-                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
-                        />
-                        %
-                      </span>
-                    )}
-                    {(stopRule.type === "swing" || stopRule.type === "hvn") && (
-                      <span className="flex items-center gap-1 text-xs">
-                        buffer
-                        <input
-                          type="number"
-                          step="0.05"
-                          min={0}
-                          value={stopRule.bufferAtr}
-                          onChange={(e) => setStopRule({ type: stopRule.type, bufferAtr: Number(e.target.value) })}
-                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
-                        />
-                        ATR
-                      </span>
-                    )}
-                  </div>
-                </div>
-                <div>
-                  <label className="text-xs text-muted">Take-profit</label>
-                  <div className="mt-1 flex flex-wrap items-center gap-2">
-                    <select
-                      value={targetRule.type}
-                      onChange={(e) => {
-                        const t = e.target.value as TargetRule["type"];
-                        setTargetRule(
-                          t === "default"
-                            ? { type: "default" }
-                            : t === "rr"
-                              ? { type: "rr", ratio: 2 }
-                              : t === "atr"
-                                ? { type: "atr", multiple: 3 }
-                                : t === "swing"
-                                  ? { type: "swing" }
-                                  : { type: "hvn" },
-                        );
-                      }}
-                      className="rounded-md border border-edge bg-background px-2 py-1 text-xs outline-none"
-                    >
-                      <option value="default">Structure default (opposing structure / 2R)</option>
-                      <option value="rr">Fixed R multiple of the stop</option>
-                      <option value="hvn">Next HVN in trade direction</option>
-                      <option value="swing">Next swing high/low</option>
-                      <option value="atr">Fixed ATR multiple</option>
-                    </select>
-                    {targetRule.type === "rr" && (
-                      <span className="flex items-center gap-1 text-xs">
-                        <input
-                          type="number"
-                          step="0.1"
-                          min={0.2}
-                          value={targetRule.ratio}
-                          onChange={(e) => setTargetRule({ type: "rr", ratio: Number(e.target.value) })}
-                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
-                        />
-                        R
-                      </span>
-                    )}
-                    {targetRule.type === "atr" && (
-                      <span className="flex items-center gap-1 text-xs">
-                        <input
-                          type="number"
-                          step="0.1"
-                          min={0.1}
-                          value={targetRule.multiple}
-                          onChange={(e) => setTargetRule({ type: "atr", multiple: Number(e.target.value) })}
-                          className="w-16 rounded-md border border-edge bg-background px-2 py-1 outline-none"
-                        />
-                        × ATR
-                      </span>
-                    )}
-                  </div>
-                </div>
+              <div className="mt-2">
+                <RiskRulesEditor stopRule={stopRule} targetRule={targetRule} onStopChange={setStopRule} onTargetChange={setTargetRule} />
               </div>
             </div>
 
@@ -730,7 +628,7 @@ export default function StrategyLab() {
                       </span>
                     </span>
                     <span className="flex items-center gap-2">
-                      <button onClick={() => loadStrategy(s.strategy)} className="rounded-md border border-edge px-2 py-1 text-xs font-semibold hover:bg-edge">
+                      <button onClick={() => loadStrategy(s.strategy, s.id)} className="rounded-md border border-edge px-2 py-1 text-xs font-semibold hover:bg-edge">
                         Load
                       </button>
                       <button onClick={() => setSaved(deleteSavedStrategy(s.id))} className="text-muted hover:text-bear">

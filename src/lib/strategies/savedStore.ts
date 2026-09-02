@@ -39,6 +39,13 @@ export function addSavedStrategy(strategy: CustomStrategy, source: SavedStrategy
   return next;
 }
 
+/** Overwrite a saved strategy's definition in place (keeps its id and position). */
+export function updateSavedStrategy(id: string, strategy: CustomStrategy): SavedStrategy[] {
+  const next = loadSavedStrategies().map((s) => (s.id === id ? { ...s, savedAt: Date.now(), strategy } : s));
+  saveSavedStrategies(next);
+  return next;
+}
+
 export function deleteSavedStrategy(id: string): SavedStrategy[] {
   const next = loadSavedStrategies().filter((s) => s.id !== id);
   saveSavedStrategies(next);

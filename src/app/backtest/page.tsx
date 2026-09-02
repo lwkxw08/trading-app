@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import RiskRulesEditor from "@/components/RiskRulesEditor";
 import SymbolInput from "@/components/SymbolInput";
 import { getJson, postJson } from "@/components/api";
 import { fmtPrice, fmtTime } from "@/components/format";
@@ -19,10 +20,10 @@ import {
 import { REGIME_LABELS, type RegimeLabel } from "@/lib/strategies/regime";
 import { runMonteCarlo } from "@/lib/backtest/montecarlo";
 import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
-import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy, type WeightedUserCondition } from "@/lib/strategies/custom";
-import type { RiskSettings } from "@/lib/strategies/risk";
-import { describeStopRule, describeTargetRule } from "@/lib/strategies/risk";
-import { loadSavedStrategies, type SavedStrategy } from "@/lib/strategies/savedStore";
+import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy } from "@/lib/strategies/custom";
+import type { RiskSettings, StopRule, TargetRule } from "@/lib/strategies/risk";
+import { addSavedStrategy, loadSavedStrategies, updateSavedStrategy, type SavedStrategy } from "@/lib/strategies/savedStore";
+import { describeUserCondition, loadUserConditions, saveUserConditions, type UserCondition } from "@/lib/strategies/userConditions";
 import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
 import { backtestStochReversal, DEFAULT_STOCH_REVERSAL_FILTERS, STOCH_REVERSAL_STRATEGY_NAME, type StochReversalBacktest, type StochReversalEntryMode, type StochReversalFilters } from "@/lib/strategies/stochReversal";
 import { backtestTrendlineFib, DEFAULT_FIB_TARGET, DEFAULT_MAX_PULLBACK_BARS, DEFAULT_TRENDLINE_FIB_FILTERS, ENTRY_FIB, FIB_TARGET_LEVELS, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibBacktest, type TrendlineFibFilters } from "@/lib/strategies/trendlineFib";
@@ -186,7 +187,15 @@ export default function BacktestPage() {
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareError, setCompareError] = useState<string | null>(null);
 
-  const [loadedExtras, setLoadedExtras] = useState<{ name: string; userConditions?: WeightedUserCondition[]; risk?: RiskSettings } | null>(null);
+  // Full custom-strategy configuration (editable, savable back to the library)
+  const [strategyName, setStrategyName] = useState("Backtested strategy");
+  const [loadedId, setLoadedId] = useState<string | null>(null);
+  const [userConds, setUserConds] = useState<UserCondition[]>([]);
+  const [userStates, setUserStates] = useState<Record<string, ConditionState>>({});
+  const [stopRule, setStopRule] = useState<StopRule>({ type: "default" });
+  const [targetRule, setTargetRule] = useState<TargetRule>({ type: "default" });
+  const [justSaved, setJustSaved] = useState(false);
+  const [justUpdated, setJustUpdated] = useState(false);
 
   // Session Open Range backtest (dedicated, deliberately simple)
   const [soSymbol, setSoSymbol] = useState("BTCUSDT");
@@ -262,18 +271,74 @@ export default function BacktestPage() {
   useEffect(() => {
     setSavedRuns(loadRuns());
     setSavedStrategies(loadSavedStrategies());
+    const conds = loadUserConditions();
+    setUserConds(conds);
+    setUserStates(Object.fromEntries(conds.map((c) => [c.id, { enabled: false, weight: 10 }])));
   }, []);
 
-  const custom = useMemo<CustomStrategy>(
-    () => ({
-      name: loadedExtras?.name ?? "Backtested strategy",
+  const custom = useMemo<CustomStrategy>(() => {
+    const enabledUser = userConds
+      .filter((c) => userStates[c.id]?.enabled)
+      .map((c) => ({ condition: c, weight: userStates[c.id].weight }));
+    const riskCustom = stopRule.type !== "default" || targetRule.type !== "default";
+    return {
+      name: strategyName,
       minScore: customMinScore,
       conditions: CONDITION_LIBRARY.filter((c) => conditions[c.id].enabled).map((c) => ({ id: c.id, weight: conditions[c.id].weight })),
-      ...(loadedExtras?.userConditions && loadedExtras.userConditions.length > 0 ? { userConditions: loadedExtras.userConditions } : {}),
-      ...(loadedExtras?.risk ? { risk: loadedExtras.risk } : {}),
-    }),
-    [conditions, customMinScore, loadedExtras],
+      ...(enabledUser.length > 0 ? { userConditions: enabledUser } : {}),
+      ...(riskCustom ? { risk: { stop: stopRule, target: targetRule } satisfies RiskSettings } : {}),
+    };
+  }, [conditions, customMinScore, strategyName, userConds, userStates, stopRule, targetRule]);
+
+  const loadStrategyIntoEditor = useCallback(
+    (s: SavedStrategy) => {
+      setLoadedId(s.id);
+      setStrategyName(s.strategy.name);
+      setCustomMinScore(s.strategy.minScore);
+      setConditions(
+        Object.fromEntries(
+          CONDITION_LIBRARY.map((c) => {
+            const cond = s.strategy.conditions.find((x) => x.id === c.id);
+            return [c.id, { enabled: !!cond, weight: cond?.weight ?? c.defaultWeight }];
+          }),
+        ) as Record<ConditionId, ConditionState>,
+      );
+      // Import any embedded user conditions missing from the local library.
+      const embedded = s.strategy.userConditions ?? [];
+      const missing = embedded.map((u) => u.condition).filter((c) => !userConds.some((x) => x.id === c.id));
+      const nextConds = missing.length > 0 ? [...userConds, ...missing] : userConds;
+      if (missing.length > 0) {
+        setUserConds(nextConds);
+        saveUserConditions(nextConds);
+      }
+      setUserStates(
+        Object.fromEntries(
+          nextConds.map((c) => {
+            const picked = embedded.find((u) => u.condition.id === c.id);
+            return [c.id, { enabled: Boolean(picked), weight: picked?.weight ?? 10 }];
+          }),
+        ),
+      );
+      setStopRule(s.strategy.risk?.stop ?? { type: "default" });
+      setTargetRule(s.strategy.risk?.target ?? { type: "default" });
+    },
+    [userConds],
   );
+
+  const saveAsNewStrategy = useCallback(() => {
+    const next = addSavedStrategy(custom, "manual");
+    setSavedStrategies(next);
+    setLoadedId(next[0]?.id ?? null);
+    setJustSaved(true);
+    setTimeout(() => setJustSaved(false), 2000);
+  }, [custom]);
+
+  const updateLoadedStrategy = useCallback(() => {
+    if (!loadedId) return;
+    setSavedStrategies(updateSavedStrategy(loadedId, custom));
+    setJustUpdated(true);
+    setTimeout(() => setJustUpdated(false), 2000);
+  }, [loadedId, custom]);
 
   const canRun = strategyType === "builtin" || custom.conditions.length > 0 || (custom.userConditions?.length ?? 0) > 0;
 
@@ -570,21 +635,7 @@ export default function BacktestPage() {
                     value=""
                     onChange={(e) => {
                       const s = savedStrategies.find((x) => x.id === e.target.value);
-                      if (!s) return;
-                      setConditions(
-                        Object.fromEntries(
-                          CONDITION_LIBRARY.map((c) => {
-                            const cond = s.strategy.conditions.find((x) => x.id === c.id);
-                            return [c.id, { enabled: !!cond, weight: cond?.weight ?? c.defaultWeight }];
-                          }),
-                        ) as Record<ConditionId, ConditionState>,
-                      );
-                      setCustomMinScore(s.strategy.minScore);
-                      setLoadedExtras(
-                        (s.strategy.userConditions?.length ?? 0) > 0 || s.strategy.risk
-                          ? { name: s.strategy.name, userConditions: s.strategy.userConditions, risk: s.strategy.risk }
-                          : null,
-                      );
+                      if (s) loadStrategyIntoEditor(s);
                     }}
                     className={`${inputCls} w-full min-w-0 max-w-full truncate`}
                   >
@@ -596,20 +647,32 @@ export default function BacktestPage() {
                     ))}
                   </select>
                 )}
-                {loadedExtras && (
-                  <div className="flex items-start justify-between gap-2 rounded-md border border-accent/40 bg-accent/5 px-2 py-1.5 text-[11px] text-muted">
-                    <span className="min-w-0">
-                      Carried from “{loadedExtras.name}”:
-                      {(loadedExtras.userConditions?.length ?? 0) > 0 &&
-                        ` ${loadedExtras.userConditions?.length} user condition${(loadedExtras.userConditions?.length ?? 0) === 1 ? "" : "s"}`}
-                      {loadedExtras.risk &&
-                        ` · SL: ${describeStopRule(loadedExtras.risk.stop)} · TP: ${describeTargetRule(loadedExtras.risk.target)}`}
-                    </span>
-                    <button onClick={() => setLoadedExtras(null)} className="shrink-0 text-muted hover:text-bear">
-                      ✕
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    value={strategyName}
+                    onChange={(e) => setStrategyName(e.target.value)}
+                    placeholder="Strategy name…"
+                    className={`${inputCls} min-w-0 flex-1`}
+                  />
+                  {loadedId && savedStrategies.some((s) => s.id === loadedId) && (
+                    <button
+                      onClick={updateLoadedStrategy}
+                      disabled={!canRun}
+                      className="rounded-md bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                      title="Overwrite the loaded saved strategy with the settings below — the Strategy Lab and scanner pick the update up immediately"
+                    >
+                      {justUpdated ? "Updated ✓" : "Update strategy"}
                     </button>
-                  </div>
-                )}
+                  )}
+                  <button
+                    onClick={saveAsNewStrategy}
+                    disabled={!canRun}
+                    className="rounded-md border border-edge px-2.5 py-1 text-xs font-semibold hover:bg-edge disabled:opacity-50"
+                    title="Save the settings below as a new strategy in your library (the original is kept)"
+                  >
+                    {justSaved ? "Saved ✓" : loadedId ? "Save as new" : "Save strategy"}
+                  </button>
+                </div>
                 <div className="max-h-64 space-y-1 overflow-auto pr-1">
                   {CONDITION_LIBRARY.map((c) => {
                     const st = conditions[c.id];
@@ -635,11 +698,43 @@ export default function BacktestPage() {
                       </label>
                     );
                   })}
+                  {userConds.map((c) => {
+                    const st = userStates[c.id] ?? { enabled: false, weight: 10 };
+                    return (
+                      <label key={c.id} className="flex cursor-pointer items-center gap-2 text-xs" title={describeUserCondition(c)}>
+                        <input
+                          type="checkbox"
+                          checked={st.enabled}
+                          onChange={(e) => setUserStates((prev) => ({ ...prev, [c.id]: { ...st, enabled: e.target.checked } }))}
+                          className="accent-[var(--accent)]"
+                        />
+                        <span className="min-w-0 flex-1 truncate">
+                          {c.label} <span className="text-[10px] uppercase text-accent">yours</span>
+                        </span>
+                        {st.enabled && (
+                          <input
+                            type="number"
+                            min={1}
+                            max={30}
+                            value={st.weight}
+                            onChange={(e) => setUserStates((prev) => ({ ...prev, [c.id]: { ...st, weight: Number(e.target.value) } }))}
+                            className={`${inputCls} w-14 font-mono`}
+                          />
+                        )}
+                      </label>
+                    );
+                  })}
                 </div>
                 <div className="flex items-center gap-2 text-sm">
                   <label className="text-xs text-muted">Min score</label>
                   <input type="range" min={0} max={100} value={customMinScore} onChange={(e) => setCustomMinScore(Number(e.target.value))} className="w-32 accent-[var(--accent)]" />
                   <span className="text-xs">{customMinScore}%</span>
+                </div>
+                <div className="rounded-md border border-edge bg-background p-2">
+                  <span className="text-xs font-semibold">Risk settings — SL &amp; TP placement</span>
+                  <div className="mt-2">
+                    <RiskRulesEditor stopRule={stopRule} targetRule={targetRule} onStopChange={setStopRule} onTargetChange={setTargetRule} />
+                  </div>
                 </div>
               </div>
             )}
