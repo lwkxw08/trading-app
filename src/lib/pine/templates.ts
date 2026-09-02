@@ -727,7 +727,7 @@ sellSignal = ta.crossunder(hist, 0) and close < trendEma
  * TP at a selectable fib extension (2.618 default). Pivots confirm pivotLen
  * bars later (no repaint).
  */
-const TRENDLINE_FIB_PINE_BUILD = "v3";
+const TRENDLINE_FIB_PINE_BUILD = "v4";
 
 function trendlineFibPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -827,11 +827,14 @@ findLine(array<int> bars, array<float> vals, bool falling) =>
                 span = math.abs(slp) * (lastTouchBar - b1)
                 if span < minSpanAtr * atrValue
                     continue
-                // respected: no close through the line between first and last touch
+                // respected: no close through the line from the first touch to now —
+                // a line price has already closed through is consumed and must never be
+                // re-found (only the last pivotLen bars are exempt, covering the
+                // pivot-confirmation lag around a fresh break)
                 ok = true
-                for off = bar_index - lastTouchBar to bar_index - b1
+                for off = 0 to bar_index - b1
                     lv2 = v1 + slp * (bar_index - off - b1)
-                    if falling ? close[off] > lv2 + respectTol * atrValue : close[off] < lv2 - respectTol * atrValue
+                    if off > pivotLen and (falling ? close[off] > lv2 + respectTol * atrValue : close[off] < lv2 - respectTol * atrValue)
                         ok := false
                         break
                 if ok and (bestAnchorBar < 0 or lastTouchBar > bestLastBar or (lastTouchBar == bestLastBar and touches > bestTouches))
