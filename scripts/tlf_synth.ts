@@ -232,6 +232,48 @@ const lineAt = (i: number) => 180 - 0.8 * (i - 40); // resistance value at candl
   }
 }
 
+// ── 8b. Fib anchors to the first DIRECTIONAL close through the line ──────
+{
+  const noFilters = { decisiveBreak: false, strongBreakCandle: false, momentumFilter: false };
+
+  // a red candle closes above the line first; the fib must anchor to the
+  // following green close-through, not the red one
+  const bars = [...WARMUP, ...DOWN];
+  const lv = lineAt(bars.length);
+  bars.push({ o: lv + 6, h: lv + 6.5, l: lv + 1, c: lv + 2 }); // red close above the line — break, but not the anchor
+  const lv2 = lineAt(bars.length);
+  bars.push({ o: lv2 + 3, h: lv2 + 9, l: lv2 + 2.5, c: lv2 + 8 }); // first green close-through — the anchor
+  const setup = detectTrendlineFibSetup(toCandles(bars), DEFAULT_FIB_TARGET, noFilters);
+  const candles = toCandles(bars);
+  check(
+    "fib 1 anchors to the first GREEN close through the line, not the earlier red one",
+    setup !== null && setup.state === "awaiting_pullback" && setup.fibOne === lv2 + 9 && setup.breakTime === candles[candles.length - 1].time,
+    `state=${setup?.state ?? "null"} fibOne=${setup?.fibOne ?? "null"} expected=${lv2 + 9}`,
+  );
+  check(
+    "fib 0 is the swing of the leg into the break, not an older low",
+    setup !== null && setup.swingPrice === Math.min(...bars.slice(WARMUP.length + 35).map((b) => b.l)),
+    `swing=${setup?.swingPrice ?? "null"}`,
+  );
+
+  // no directional close within the anchor window: setup abandoned
+  const stale = [...WARMUP, ...DOWN];
+  const lvS = lineAt(stale.length);
+  stale.push({ o: lvS + 6, h: lvS + 6.5, l: lvS + 1, c: lvS + 2 }); // red close above the line
+  for (let k = 0; k < 7; k++) {
+    const lvK = lineAt(stale.length);
+    stale.push({ o: lvK + 4, h: lvK + 4.5, l: lvK + 2.5, c: lvK + 3 }); // red drifting closes staying above the line
+  }
+  const lvG = lineAt(stale.length);
+  stale.push({ o: lvG + 3, h: lvG + 9, l: lvG + 2.5, c: lvG + 8 }); // green close arrives too late
+  const sStale = detectTrendlineFibSetup(toCandles(stale), DEFAULT_FIB_TARGET, noFilters);
+  check(
+    "no directional close within the anchor window abandons the setup",
+    sStale === null || (sStale.state !== "awaiting_pullback" && sStale.state !== "triggered"),
+    `state=${sStale?.state ?? "null"} detail=${sStale?.stateDetail ?? ""}`,
+  );
+}
+
 // ── 9. Backtest: full round trip in both directions ──────────────────────
 {
   const bars = [...WARMUP, ...DOWN];

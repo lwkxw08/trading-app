@@ -719,13 +719,15 @@ sellSignal = ta.crossunder(hist, 0) and close < trendEma
  * detector: a falling resistance (downtrend) or rising support (uptrend)
  * trendline with at least 3 pivot touches, respected between touches; the
  * break only counts when a candle CLOSES through the line (a wick through
- * that closes back on the trend side does not). The fib is anchored from the
- * trend's swing extreme (0) to the break candle's high/low (1); entry at the
- * 0.618 pullback on the break side, SL just beyond the swing, TP at a
- * selectable fib extension (2.618 default). Pivots confirm pivotLen bars
- * later (no repaint).
+ * that closes back on the trend side does not). The fib anchors to the first
+ * candle that closes through the line IN THE TRADE'S DIRECTION (green for a
+ * buy, red for a sell) — fib 0 is the swing extreme of the leg into the
+ * break (from the line's last touch), fib 1 the anchor candle's high/low;
+ * entry at the 0.618 pullback on the break side, SL just beyond the swing,
+ * TP at a selectable fib extension (2.618 default). Pivots confirm pivotLen
+ * bars later (no repaint).
  */
-const TRENDLINE_FIB_PINE_BUILD = "v2";
+const TRENDLINE_FIB_PINE_BUILD = "v3";
 
 function trendlineFibPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -740,7 +742,10 @@ indicator("${sanitize(cfg.name)} [${TRENDLINE_FIB_PINE_BUILD}]", overlay=true, m
 // Trendline break + fib retracement. A trendline needs at least minTouches
 // pivot touches and must be respected between them (no candle CLOSE through
 // it). The break requires a candle CLOSE through the line — an intrabar poke
-// that closes back on the trend side does not arm the setup.
+// that closes back on the trend side does not arm the setup. The fib anchors
+// to the first candle that closes through the line in the trade's direction
+// (green for a buy, red for a sell); fib 0 is the swing extreme of the leg
+// into the break, measured from the line's last touch.
 
 // ── Inputs ─────────────────────────────────────────────────────────────
 accountSize = input.float(10000, "Account size", minval=1)
@@ -755,6 +760,7 @@ entryFib    = input.float(0.618, "Entry fib level", minval=0.1, maxval=0.9, step
 targetFib   = input.float(${targetFib}, "Target fib level (TP)", minval=0.5, step=0.001, tooltip="Fib extension used for the take profit: 1.0, 1.618, 2.618 (default), 3.618, 4.236…")
 slBufAtr    = input.float(0.25, "SL buffer beyond the fib 0 swing (ATR)", minval=0.0, step=0.05)
 expiryBars  = input.int(${maxPullbackBars}, "Max candles to wait for the pullback", minval=2, tooltip="A clean setup pulls back to the entry fib promptly after the break. If the entry hasn't filled within this many candles, the setup is invalidated.")
+anchorWait  = input.int(5, "Max candles to wait for the directional break close", minval=0, tooltip="The fib anchors to the first candle that closes through the line in the trade's direction (green for a buy, red for a sell). If that close doesn't arrive within this many candles of the first close through the line, the setup is abandoned.")
 useDecisive = input.bool(true, "Decisive break (close must clear the line by the margin)", tooltip="The break close must clear the trendline by the margin below — marginal squeaks through the line are where most fakeouts come from. A close through the line without the margin still ends the trendline (it is no longer respected), it just doesn't arm a trade.")
 breakMargin = input.float(0.15, "Decisive break margin (ATR)", minval=0.0, step=0.05)
 useStrong   = input.bool(true, "Strong break candle", tooltip="The break candle must be a directional candle: correct colour with a body at least half its range.")
@@ -835,17 +841,18 @@ findLine(array<int> bars, array<float> vals, bool falling) =>
                     bestFirstBar := b1
                     bestLastBar := lastTouchBar
                     bestTouches := touches
-    [bestAnchorBar >= 0, bestSlope, bestAnchorBar, bestAnchorVal, bestFirstBar, bestTouches]
+    [bestAnchorBar >= 0, bestSlope, bestAnchorBar, bestAnchorVal, bestFirstBar, bestLastBar, bestTouches]
 
 // ── Per-side state machines ────────────────────────────────────────────
-// resistance side (downtrend → BUY): 0 idle · 1 line armed · 2 broken, awaiting the fib pullback · 3 in trade
+// resistance side (downtrend → BUY): 0 idle · 1 line armed · 4 line broken, awaiting the directional (green) close · 2 anchored, awaiting the fib pullback · 3 in trade
 var int   rState = 0
 var float rSlope = na
 var int   rAnchorBar = na
 var float rAnchorVal = na
 var int   rFirstBar = na
 var int   rTouches = 0
-var float rSwing = na   // running lowest low since the first touch (fib 0)
+var float rSwing = na   // running lowest low since the last touch (fib 0 — the leg into the break)
+var int   rLineBreakBar = na
 var int   rBreakBar = na
 var float rEntry = na
 var float rSl = na
@@ -857,7 +864,8 @@ var int   sAnchorBar = na
 var float sAnchorVal = na
 var int   sFirstBar = na
 var int   sTouches = 0
-var float sSwing = na   // running highest high since the first touch (fib 0)
+var float sSwing = na   // running highest high since the last touch (fib 0 — the leg into the break)
+var int   sLineBreakBar = na
 var int   sBreakBar = na
 var float sEntry = na
 var float sSl = na
@@ -870,7 +878,7 @@ bool sBroke = false
 
 // look for a new line when idle and a fresh pivot just confirmed
 if rState == 0 and not na(ph)
-    [found, slp, aBar, aVal, fBar, tCount] = findLine(hiBars, hiVals, true)
+    [found, slp, aBar, aVal, fBar, lBar, tCount] = findLine(hiBars, hiVals, true)
     if found
         rState := 1
         rSlope := slp
@@ -879,11 +887,11 @@ if rState == 0 and not na(ph)
         rFirstBar := fBar
         rTouches := tCount
         sw = low
-        for off = 0 to bar_index - fBar
+        for off = 0 to bar_index - lBar
             sw := math.min(sw, low[off])
         rSwing := sw
 if sState == 0 and not na(pl)
-    [found, slp, aBar, aVal, fBar, tCount] = findLine(loBars, loVals, false)
+    [found, slp, aBar, aVal, fBar, lBar, tCount] = findLine(loBars, loVals, false)
     if found
         sState := 1
         sSlope := slp
@@ -892,7 +900,7 @@ if sState == 0 and not na(pl)
         sFirstBar := fBar
         sTouches := tCount
         sw = high
-        for off = 0 to bar_index - fBar
+        for off = 0 to bar_index - lBar
             sw := math.max(sw, high[off])
         sSwing := sw
 
@@ -900,10 +908,29 @@ if sState == 0 and not na(pl)
 if rState == 1
     rSwing := math.min(rSwing, low)
     lv = rAnchorVal + rSlope * (bar_index - rAnchorBar)
+    if close > lv
+        // candle CLOSED above the falling resistance — the line is broken;
+        // the fib anchors to the first GREEN close through it (checked below,
+        // possibly this same bar)
+        rState := 4
+        rLineBreakBar := bar_index
+if sState == 1
+    sSwing := math.max(sSwing, high)
+    lv = sAnchorVal + sSlope * (bar_index - sAnchorBar)
+    if close < lv
+        sState := 4
+        sLineBreakBar := bar_index
+
+// line broken: anchor the fib to the first candle that closes through it in
+// the trade's direction (green for a buy, red for a sell)
+if rState == 4
+    rSwing := math.min(rSwing, low)
+    lv = rAnchorVal + rSlope * (bar_index - rAnchorBar)
     margin = useDecisive ? breakMargin * atrValue : 0.0
-    if close > lv + margin
-        // candle CLOSED above the falling resistance — candidate break
-        strongOk = not useStrong or (close > open and (high - low <= 0 or math.abs(close - open) >= 0.5 * (high - low)))
+    if close < lv
+        rState := 0 // closed back on the trend side — the break failed
+    else if close > open and close > lv + margin
+        strongOk = not useStrong or (high - low <= 0 or math.abs(close - open) >= 0.5 * (high - low))
         momentumOk = not useMomentum or rsiValue > 50
         fibRange = high - rSwing
         if strongOk and momentumOk and fibRange > 0
@@ -914,15 +941,17 @@ if rState == 1
             rState := 2
             rBroke := true
         else
-            rState := 0 // break failed confirmation — line is consumed
-    else if close > lv
-        rState := 0 // closed through the line without the decisive margin — line no longer respected
-if sState == 1
+            rState := 0 // anchor candle failed confirmation — line is consumed
+    else if bar_index - rLineBreakBar > anchorWait
+        rState := 0 // no directional close arrived — setup abandoned
+if sState == 4
     sSwing := math.max(sSwing, high)
     lv = sAnchorVal + sSlope * (bar_index - sAnchorBar)
     margin = useDecisive ? breakMargin * atrValue : 0.0
-    if close < lv - margin
-        strongOk = not useStrong or (close < open and (high - low <= 0 or math.abs(close - open) >= 0.5 * (high - low)))
+    if close > lv
+        sState := 0
+    else if close < open and close < lv - margin
+        strongOk = not useStrong or (high - low <= 0 or math.abs(close - open) >= 0.5 * (high - low))
         momentumOk = not useMomentum or rsiValue < 50
         fibRange = sSwing - low
         if strongOk and momentumOk and fibRange > 0
@@ -934,7 +963,7 @@ if sState == 1
             sBroke := true
         else
             sState := 0
-    else if close < lv
+    else if bar_index - sLineBreakBar > anchorWait
         sState := 0
 
 // awaiting the fib pullback (not on the break bar itself)
@@ -1002,11 +1031,11 @@ posSize     = riskDist > 0 ? riskAmount / riskDist : 0.0
 // ── Plots ──────────────────────────────────────────────────────────────
 plotshape(buySignal,  title="Buy",  style=shape.triangleup,   location=location.belowbar, color=color.new(color.green, 0), size=size.small, text="BUY")
 plotshape(sellSignal, title="Sell", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0),   size=size.small, text="SELL")
-bgcolor(rState == 1 or sState == 1 ? color.new(color.yellow, 94) : rState == 2 or sState == 2 ? color.new(color.blue, 92) : rState == 3 or sState == 3 ? color.new(color.teal, 92) : na, title="Setup state")
+bgcolor(rState == 1 or sState == 1 ? color.new(color.yellow, 94) : rState == 4 or sState == 4 ? color.new(color.orange, 92) : rState == 2 or sState == 2 ? color.new(color.blue, 92) : rState == 3 or sState == 3 ? color.new(color.teal, 92) : na, title="Setup state")
 
 var table info = table.new(position.top_right, 2, 5, border_width=1)
 if barstate.islast
-    stateTxt = rState == 2 ? "resistance broken — awaiting " + str.tostring(entryFib) + " pullback" : sState == 2 ? "support broken — awaiting " + str.tostring(entryFib) + " pullback" : rState == 3 or sState == 3 ? "in trade" : rState == 1 ? "falling resistance armed (" + str.tostring(rTouches) + " touches)" : sState == 1 ? "rising support armed (" + str.tostring(sTouches) + " touches)" : "idle"
+    stateTxt = rState == 2 ? "resistance broken — awaiting " + str.tostring(entryFib) + " pullback" : sState == 2 ? "support broken — awaiting " + str.tostring(entryFib) + " pullback" : rState == 4 ? "resistance broken — awaiting the green anchor close" : sState == 4 ? "support broken — awaiting the red anchor close" : rState == 3 or sState == 3 ? "in trade" : rState == 1 ? "falling resistance armed (" + str.tostring(rTouches) + " touches)" : sState == 1 ? "rising support armed (" + str.tostring(sTouches) + " touches)" : "idle"
     table.cell(info, 0, 0, "Setup state (${TRENDLINE_FIB_PINE_BUILD})", text_color=color.white, bgcolor=color.new(color.gray, 40))
     table.cell(info, 1, 0, stateTxt, text_color=color.white, bgcolor=color.new(color.gray, 60))
     table.cell(info, 0, 1, "Entry (" + str.tostring(entryFib) + " fib)", text_color=color.white, bgcolor=color.new(color.gray, 40))

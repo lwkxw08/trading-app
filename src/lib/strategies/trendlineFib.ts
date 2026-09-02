@@ -12,10 +12,14 @@ export const TRENDLINE_FIB_STRATEGY_NAME = "Trendline Break + Fib Retracement";
  *    (uptrend) with at least 3 touch points, respected between touches
  *    (no candle CLOSE through the line),
  * 2. Break: a candle CLOSES through the line — a wick poking through that
- *    closes back on the trend side does not count,
- * 3. Fib: anchored from the swing extreme of the trend (fib 0 — the lowest
- *    low for a downtrend, highest high for an uptrend) to the break candle's
- *    high/low (fib 1),
+ *    closes back on the trend side does not count. The fib anchors to the
+ *    first candle that closes through the line IN THE TRADE'S DIRECTION
+ *    (green for a buy, red for a sell); if no directional close arrives
+ *    within a few candles of the break, the setup is abandoned,
+ * 3. Fib: anchored from the swing extreme of the leg running into the break
+ *    (fib 0 — the lowest low for a downtrend, highest high for an uptrend,
+ *    measured from the line's last touch) to the anchor candle's high/low
+ *    (fib 1),
  * 4. Entry: the 0.618 retracement on the break side of the line,
  * 5. SL just beyond the swing extreme (fib 0) with an ATR buffer,
  * 6. TP at a fib extension level — 2.618 by default, selectable.
@@ -40,13 +44,13 @@ export interface TrendlineFibSetup {
   /** number of qualifying touch points on the line */
   touches: number;
   touchTimes: number[];
-  /** break candle (the candle that CLOSED through the line), once it exists */
+  /** anchor candle (the first candle that CLOSED through the line in the trade's direction), once it exists */
   breakTime: number | null;
-  /** trendline value at the break candle */
+  /** trendline value at the anchor candle */
   breakLinePrice: number | null;
-  /** fib 1 anchor: the break candle's high (bullish) / low (bearish) */
+  /** fib 1 anchor: the anchor candle's high (bullish) / low (bearish) */
   fibOne: number | null;
-  /** fib 0 anchor: the trend's swing low (bullish) / swing high (bearish) */
+  /** fib 0 anchor: the swing low (bullish) / swing high (bearish) of the leg into the break */
   swingPrice: number | null;
   swingTime: number | null;
   /** fib level used for the target */
@@ -74,6 +78,7 @@ const BREAK_MARGIN_ATR = 0.15; // decisive break: the close must clear the line 
 const STRONG_BODY_RATIO = 0.5; // strong break candle: body at least this fraction of its range
 const SL_BUFFER_ATR = 0.25; // "just outside" the swing extreme
 const MAX_LINE_AGE_BARS = 60; // a forming line is only watched while its last touch is recent
+const ANCHOR_WAIT_BARS = 5; // the directional close anchoring the fib must arrive this soon after the break
 
 /** Confirmation checks that the price action is heading in the break direction (all on by default). */
 export interface TrendlineFibFilters {
@@ -161,19 +166,37 @@ function findLines(candles: Candle[], pivots: SwingPoint[], atr14: (number | nul
   return lines;
 }
 
-/** The first candle after the last touch that CLOSES through the line (with the decisive margin when on). */
-function findBreak(candles: Candle[], line: Line, atr14: (number | null)[], decisive: boolean): number {
+/** The first candle after the last touch that CLOSES through the line at all. */
+function findBreak(candles: Candle[], line: Line): number {
   const lastTouch = line.touches[line.touches.length - 1];
   const bullish = line.direction === "bullish";
   for (let i = lastTouch.index + 1; i < candles.length; i++) {
     const lv = lineValueAt(line, i);
-    const margin = decisive ? BREAK_MARGIN_ATR * (atr14[i] ?? candles[i].close * 0.01) : 0;
-    if (bullish ? candles[i].close > lv + margin : candles[i].close < lv - margin) return i;
-    // a non-decisive close through the line without the margin still ends the
-    // line's validity — it is no longer a cleanly respected trendline
-    if (bullish ? candles[i].close > lv : candles[i].close < lv) return -1;
+    if (bullish ? candles[i].close > lv : candles[i].close < lv) return i;
   }
   return 0; // still unbroken
+}
+
+/**
+ * The candle the fib anchors to: the first candle from the break onwards that
+ * closes through the line in the trade's direction (green for a buy, red for
+ * a sell), with the decisive margin when that filter is on. Returns the
+ * anchor index, -1 if the setup failed (price closed back on the trend side
+ * or no directional close arrived within ANCHOR_WAIT_BARS), or -2 if the
+ * series ended while still waiting.
+ */
+function findAnchor(candles: Candle[], line: Line, breakIdx: number, atr14: (number | null)[], decisive: boolean): number {
+  const bullish = line.direction === "bullish";
+  for (let i = breakIdx; i < candles.length; i++) {
+    if (i - breakIdx > ANCHOR_WAIT_BARS) return -1;
+    const c = candles[i];
+    const lv = lineValueAt(line, i);
+    if (bullish ? c.close < lv : c.close > lv) return -1; // closed back on the trend side
+    const margin = decisive ? BREAK_MARGIN_ATR * (atr14[i] ?? c.close * 0.01) : 0;
+    const directional = bullish ? c.close > c.open : c.close < c.open;
+    if (directional && (bullish ? c.close > lv + margin : c.close < lv - margin)) return i;
+  }
+  return -2; // still waiting for the directional close
 }
 
 interface BreakLevels {
@@ -185,25 +208,26 @@ interface BreakLevels {
   takeProfit: number;
 }
 
-/** Fib anchors and levels for a confirmed break of `line` at `breakIdx`. */
-function fibLevels(candles: Candle[], line: Line, breakIdx: number, atr14: (number | null)[], targetFib: number): BreakLevels | null {
+/** Fib anchors and levels for a confirmed break of `line` anchored at `anchorIdx`. */
+function fibLevels(candles: Candle[], line: Line, anchorIdx: number, atr14: (number | null)[], targetFib: number): BreakLevels | null {
   const bullish = line.direction === "bullish";
-  const first = line.touches[0];
-  // fib 0: the trend's terminal swing — the lowest low (bullish) / highest
-  // high (bearish) between the first touch and the break candle
-  let swingIndex = first.index;
-  let swingPrice = bullish ? candles[first.index].low : candles[first.index].high;
-  for (let i = first.index; i <= breakIdx; i++) {
+  const lastTouch = line.touches[line.touches.length - 1];
+  // fib 0: the swing extreme of the leg running into the break — the lowest
+  // low (bullish) / highest high (bearish) between the last touch and the
+  // anchor candle
+  let swingIndex = lastTouch.index;
+  let swingPrice = bullish ? candles[lastTouch.index].low : candles[lastTouch.index].high;
+  for (let i = lastTouch.index; i <= anchorIdx; i++) {
     if (bullish ? candles[i].low < swingPrice : candles[i].high > swingPrice) {
       swingPrice = bullish ? candles[i].low : candles[i].high;
       swingIndex = i;
     }
   }
-  // fib 1: the break candle's high (bullish) / low (bearish)
-  const fibOne = bullish ? candles[breakIdx].high : candles[breakIdx].low;
+  // fib 1: the anchor candle's high (bullish) / low (bearish)
+  const fibOne = bullish ? candles[anchorIdx].high : candles[anchorIdx].low;
   const range = Math.abs(fibOne - swingPrice);
   if (range <= 0) return null;
-  const atrHere = atr14[breakIdx] ?? candles[breakIdx].close * 0.01;
+  const atrHere = atr14[anchorIdx] ?? candles[anchorIdx].close * 0.01;
   const entry = bullish ? swingPrice + ENTRY_FIB * range : swingPrice - ENTRY_FIB * range;
   const stopLoss = bullish ? swingPrice - SL_BUFFER_ATR * atrHere : swingPrice + SL_BUFFER_ATR * atrHere;
   const takeProfit = bullish ? swingPrice + targetFib * range : swingPrice - targetFib * range;
@@ -250,16 +274,22 @@ export function detectTrendlineFibSetup(
   ];
   if (lines.length === 0) return null;
 
-  // most recent break wins; among unbroken lines, the freshest (last touch)
-  let best: { line: Line; breakIdx: number } | null = null;
+  // most recent anchored break wins; among unbroken lines, the freshest (last touch)
+  let best: { line: Line; anchorIdx: number } | null = null;
+  let pending: { line: Line; breakIdx: number } | null = null;
   let forming: Line | null = null;
   for (const line of lines) {
-    const breakIdx = findBreak(candles, line, atr14, filters.decisiveBreak);
+    const breakIdx = findBreak(candles, line);
     if (breakIdx > 0) {
-      if (!best || breakIdx > best.breakIdx || (breakIdx === best.breakIdx && line.touches.length > best.line.touches.length)) {
-        best = { line, breakIdx };
+      const anchorIdx = findAnchor(candles, line, breakIdx, atr14, filters.decisiveBreak);
+      if (anchorIdx >= 0) {
+        if (!best || anchorIdx > best.anchorIdx || (anchorIdx === best.anchorIdx && line.touches.length > best.line.touches.length)) {
+          best = { line, anchorIdx };
+        }
+      } else if (anchorIdx === -2) {
+        if (!pending || breakIdx > pending.breakIdx) pending = { line, breakIdx };
       }
-    } else if (breakIdx === 0) {
+    } else {
       const lastTouch = line.touches[line.touches.length - 1];
       if (candles.length - 1 - lastTouch.index > MAX_LINE_AGE_BARS) continue;
       if (!forming || lastTouch.index > forming.touches[forming.touches.length - 1].index) forming = line;
@@ -286,12 +316,13 @@ export function detectTrendlineFibSetup(
   };
 
   if (!best) {
-    if (!forming) return null;
-    const bullish = forming.direction === "bullish";
+    const watch = pending?.line ?? forming;
+    if (!watch) return null;
+    const bullish = watch.direction === "bullish";
     return {
-      ...describe(forming),
-      breakTime: null,
-      breakLinePrice: null,
+      ...describe(watch),
+      breakTime: pending ? candles[pending.breakIdx].time : null,
+      breakLinePrice: pending ? lineValueAt(pending.line, pending.breakIdx) : null,
       fibOne: null,
       swingPrice: null,
       swingTime: null,
@@ -299,19 +330,21 @@ export function detectTrendlineFibSetup(
       stopLoss: null,
       takeProfit: null,
       state: "awaiting_break",
-      stateDetail: `${bullish ? "Falling resistance" : "Rising support"} line with ${forming.touches.length} touches — waiting for a candle to CLOSE ${bullish ? "above" : "below"} it`,
+      stateDetail: pending
+        ? `Line broken — waiting for a ${bullish ? "green" : "red"} candle to CLOSE ${bullish ? "above" : "below"} it to anchor the fib`
+        : `${bullish ? "Falling resistance" : "Rising support"} line with ${watch.touches.length} touches — waiting for a candle to CLOSE ${bullish ? "above" : "below"} it`,
     };
   }
 
-  const { line, breakIdx } = best;
+  const { line, anchorIdx } = best;
   const bullish = line.direction === "bullish";
   const baseInfo = describe(line);
   const breakInfo = {
-    breakTime: candles[breakIdx].time,
-    breakLinePrice: lineValueAt(line, breakIdx),
+    breakTime: candles[anchorIdx].time,
+    breakLinePrice: lineValueAt(line, anchorIdx),
   };
 
-  const rejected = breakConfirmed(candles, breakIdx, bullish, rsi14, filters);
+  const rejected = breakConfirmed(candles, anchorIdx, bullish, rsi14, filters);
   if (rejected) {
     return {
       ...baseInfo,
@@ -327,7 +360,7 @@ export function detectTrendlineFibSetup(
     };
   }
 
-  const levels = fibLevels(candles, line, breakIdx, atr14, targetFib);
+  const levels = fibLevels(candles, line, anchorIdx, atr14, targetFib);
   if (!levels) {
     return {
       ...baseInfo,
@@ -358,7 +391,7 @@ export function detectTrendlineFibSetup(
   // through the line before the fill, a stop-side close, or expiry invalidates
   let state: TrendlineFibState = "awaiting_pullback";
   let stateDetail = `Break candle closed ${bullish ? "above the falling resistance" : "below the rising support"} — waiting for the ${ENTRY_FIB} fib pullback`;
-  for (let i = breakIdx + 1; i < candles.length; i++) {
+  for (let i = anchorIdx + 1; i < candles.length; i++) {
     const c = candles[i];
     if (state === "awaiting_pullback") {
       const lv = lineValueAt(line, i);
@@ -372,7 +405,7 @@ export function detectTrendlineFibSetup(
         stateDetail = "Price closed beyond the fib 0 swing before the entry filled";
         break;
       }
-      if (i - breakIdx > maxPullbackBars) {
+      if (i - anchorIdx > maxPullbackBars) {
         state = "invalidated";
         stateDetail = `Pullback took too long — the ${ENTRY_FIB} fib did not fill within ${maxPullbackBars} candles of the break`;
         break;
@@ -477,33 +510,35 @@ export function backtestTrendlineFib(
 
   // one event per (direction, break bar): overlapping pivot pairs describe the
   // same line — keep the one with the most touches
-  const events = new Map<string, { line: Line; breakIdx: number }>();
+  const events = new Map<string, { line: Line; breakIdx: number; anchorIdx: number }>();
   let filtered = 0;
   for (const line of lines) {
-    const breakIdx = findBreak(candles, line, atr14, filters.decisiveBreak);
+    const breakIdx = findBreak(candles, line);
     if (breakIdx <= 0) continue;
     // the last touch pivot must have been confirmable before the break
     const lastTouch = line.touches[line.touches.length - 1];
     if (breakIdx < lastTouch.index + SWING_LOOKBACK) continue;
+    const anchorIdx = findAnchor(candles, line, breakIdx, atr14, filters.decisiveBreak);
+    if (anchorIdx < 0) continue;
     const key = `${line.direction}-${breakIdx}`;
     const cur = events.get(key);
-    if (!cur || line.touches.length > cur.line.touches.length) events.set(key, { line, breakIdx });
+    if (!cur || line.touches.length > cur.line.touches.length) events.set(key, { line, breakIdx, anchorIdx });
   }
 
-  const ordered = [...events.values()].sort((x, y) => x.breakIdx - y.breakIdx);
+  const ordered = [...events.values()].sort((x, y) => x.anchorIdx - y.anchorIdx);
   const trades: TrendlineFibTrade[] = [];
   let noFill = 0;
   let openAtEnd = 0;
   let busyUntil = -1;
 
-  for (const { line, breakIdx } of ordered) {
-    if (breakIdx <= busyUntil) continue;
+  for (const { line, anchorIdx } of ordered) {
+    if (anchorIdx <= busyUntil) continue;
     const bullish = line.direction === "bullish";
-    if (breakConfirmed(candles, breakIdx, bullish, rsi14, filters) !== null) {
+    if (breakConfirmed(candles, anchorIdx, bullish, rsi14, filters) !== null) {
       filtered++;
       continue;
     }
-    const levels = fibLevels(candles, line, breakIdx, atr14, targetFib);
+    const levels = fibLevels(candles, line, anchorIdx, atr14, targetFib);
     if (!levels) {
       filtered++;
       continue;
@@ -511,12 +546,12 @@ export function backtestTrendlineFib(
 
     // wait for the 0.618 fill on the break side of the extended line
     let entryIdx = -1;
-    for (let i = breakIdx + 1; i < n; i++) {
+    for (let i = anchorIdx + 1; i < n; i++) {
       const c = candles[i];
       const lv = lineValueAt(line, i);
       if (bullish ? c.close < lv : c.close > lv) break;
       if (bullish ? c.close < levels.stopLoss : c.close > levels.stopLoss) break;
-      if (i - breakIdx > maxPullbackBars) break;
+      if (i - anchorIdx > maxPullbackBars) break;
       const entryOnBreakSide = bullish ? levels.entry >= lv : levels.entry <= lv;
       if (entryOnBreakSide && (bullish ? c.low <= levels.entry : c.high >= levels.entry)) {
         entryIdx = i;
@@ -552,7 +587,7 @@ export function backtestTrendlineFib(
     trades.push({
       direction: line.direction,
       touches: line.touches.length,
-      breakTime: candles[breakIdx].time,
+      breakTime: candles[anchorIdx].time,
       swingPrice: levels.swingPrice,
       fibOne: levels.fibOne,
       entry: levels.entry,
