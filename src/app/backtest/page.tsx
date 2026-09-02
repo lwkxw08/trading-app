@@ -21,7 +21,7 @@ import { REGIME_LABELS, type RegimeLabel } from "@/lib/strategies/regime";
 import { runMonteCarlo } from "@/lib/backtest/montecarlo";
 import { TIMEFRAMES, type Candle, type Timeframe } from "@/lib/market/types";
 import { CONDITION_LIBRARY, type ConditionId, type CustomStrategy } from "@/lib/strategies/custom";
-import type { RiskSettings, StopRule, TargetRule } from "@/lib/strategies/risk";
+import { describeStopRule, describeTargetRule, type RiskSettings, type StopRule, type TargetRule } from "@/lib/strategies/risk";
 import { addSavedStrategy, loadSavedStrategies, updateSavedStrategy, type SavedStrategy } from "@/lib/strategies/savedStore";
 import { describeUserCondition, loadUserConditions, saveUserConditions, type UserCondition } from "@/lib/strategies/userConditions";
 import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
@@ -33,6 +33,17 @@ import { backtestTrendlineFib, DEFAULT_FIB_TARGET, DEFAULT_MAX_PULLBACK_BARS, DE
 // The simulation is sliced so the UI can breathe and show progress.
 const CHUNK_ENTRY_BARS = 300;
 const WF_THRESHOLDS = [45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
+const TLF_SWEEP_WAITS = [5, 10, 15, 20, 30];
+
+interface TrendlineFibSweepCell {
+  target: number;
+  maxWait: number;
+  trades: number;
+  winRatePct: number;
+  totalR: number;
+  profitFactor: number;
+  maxDrawdownR: number;
+}
 
 interface History {
   symbol: string;
@@ -253,6 +264,8 @@ export default function BacktestPage() {
   const [tlResult, setTlResult] = useState<TrendlineFibBacktest | null>(null);
   const [tlLoading, setTlLoading] = useState(false);
   const [tlError, setTlError] = useState<string | null>(null);
+  const [tlSweep, setTlSweep] = useState<TrendlineFibSweepCell[] | null>(null);
+  const [tlSweepLoading, setTlSweepLoading] = useState(false);
 
   const runTrendlineFib = useCallback(() => {
     setTlLoading(true);
@@ -267,6 +280,35 @@ export default function BacktestPage() {
       .catch((e) => setTlError(e instanceof Error ? e.message : "backtest failed"))
       .finally(() => setTlLoading(false));
   }, [tlSymbol, tlTf, tlBars, tlTarget, tlFilters, tlMaxWait]);
+
+  const runTrendlineFibSweep = useCallback(() => {
+    setTlSweepLoading(true);
+    setTlError(null);
+    setTlSweep(null);
+    const sym = tlSymbol.toUpperCase();
+    fetchHistory(sym, tlTf, tlBars)
+      .then((h) => {
+        if (h.candles.length < 200) throw new Error("not enough history for this symbol/timeframe");
+        const cells: TrendlineFibSweepCell[] = [];
+        for (const target of FIB_TARGET_LEVELS) {
+          for (const maxWait of TLF_SWEEP_WAITS) {
+            const r = backtestTrendlineFib(sym, tlTf, h.candles, target, tlFilters, maxWait);
+            cells.push({
+              target,
+              maxWait,
+              trades: r.trades.length,
+              winRatePct: r.winRatePct,
+              totalR: r.totalR,
+              profitFactor: r.profitFactor,
+              maxDrawdownR: r.maxDrawdownR,
+            });
+          }
+        }
+        setTlSweep(cells);
+      })
+      .catch((e) => setTlError(e instanceof Error ? e.message : "sweep failed"))
+      .finally(() => setTlSweepLoading(false));
+  }, [tlSymbol, tlTf, tlBars, tlFilters]);
 
   useEffect(() => {
     setSavedRuns(loadRuns());
@@ -339,6 +381,47 @@ export default function BacktestPage() {
     setJustUpdated(true);
     setTimeout(() => setJustUpdated(false), 2000);
   }, [loadedId, custom]);
+
+  const [aiApplied, setAiApplied] = useState(false);
+
+  // Applies the review's machine-readable suggestions to the editor as a NEW
+  // variant: the loaded strategy id is cleared so "Save" creates a fresh entry
+  // and the original (and its review) stays untouched.
+  const applyAiSuggestions = useCallback(() => {
+    const sc = aiReview?.suggestedChanges;
+    if (!sc) return;
+    const needsCustom = Boolean(sc.conditionWeights || sc.stop || sc.target);
+    if (needsCustom && strategyType === "builtin") setStrategyType("custom");
+    if (sc.minScore !== undefined) {
+      if (strategyType === "builtin" && !needsCustom) setMinScore(sc.minScore);
+      else setCustomMinScore(sc.minScore);
+    }
+    if (sc.direction) setDirection(sc.direction);
+    if (sc.maxHoldBars !== undefined) setMaxHoldBars(sc.maxHoldBars);
+    if (sc.regimes) {
+      setRegimeFilter({
+        trending_up: sc.regimes.includes("trending_up"),
+        trending_down: sc.regimes.includes("trending_down"),
+        ranging: sc.regimes.includes("ranging"),
+        volatile: sc.regimes.includes("volatile"),
+      });
+    }
+    if (sc.conditionWeights) {
+      setConditions((prev) => {
+        const next = { ...prev };
+        for (const w of sc.conditionWeights ?? []) {
+          next[w.id] = w.weight <= 0 ? { ...next[w.id], enabled: false } : { enabled: true, weight: w.weight };
+        }
+        return next;
+      });
+    }
+    if (sc.stop) setStopRule(sc.stop);
+    if (sc.target) setTargetRule(sc.target);
+    setStrategyName((prev) => (prev.endsWith(" (AI variant)") ? prev : `${prev} (AI variant)`));
+    setLoadedId(null);
+    setAiApplied(true);
+    setTimeout(() => setAiApplied(false), 2500);
+  }, [aiReview, strategyType]);
 
   const canRun = strategyType === "builtin" || custom.conditions.length > 0 || (custom.userConditions?.length ?? 0) > 0;
 
@@ -1052,6 +1135,35 @@ export default function BacktestPage() {
                         </div>
                       )}
                       <ReviewBlock label="Caveats" text={aiReview.caveats} />
+                      {aiReview.suggestedChanges && (
+                        <div className="rounded-md border border-edge p-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <h3 className="text-xs font-semibold uppercase text-muted">Apply as a new variant</h3>
+                            <button
+                              onClick={applyAiSuggestions}
+                              className="rounded-md bg-accent px-2.5 py-1 text-xs font-semibold text-white hover:opacity-90"
+                              title="Loads these changes into the setup as a new strategy variant — the original strategy and this review are untouched. Re-run to compare, then Save as new to keep it."
+                            >
+                              {aiApplied ? "Applied ✓ — re-run to compare" : "Apply suggestions"}
+                            </button>
+                          </div>
+                          <ul className="mt-2 space-y-0.5 text-xs text-muted">
+                            {aiReview.suggestedChanges.minScore !== undefined && <li>Min score → {aiReview.suggestedChanges.minScore}</li>}
+                            {aiReview.suggestedChanges.direction && <li>Direction → {aiReview.suggestedChanges.direction}</li>}
+                            {aiReview.suggestedChanges.regimes && (
+                              <li>Entry regimes → {aiReview.suggestedChanges.regimes.map((r) => REGIME_LABELS[r]).join(", ")} only</li>
+                            )}
+                            {aiReview.suggestedChanges.maxHoldBars !== undefined && <li>Max hold → {aiReview.suggestedChanges.maxHoldBars} bars</li>}
+                            {aiReview.suggestedChanges.conditionWeights?.map((w) => (
+                              <li key={w.id}>
+                                {CONDITION_LIBRARY.find((c) => c.id === w.id)?.label ?? w.id} → {w.weight <= 0 ? "disabled" : `weight ${w.weight}`}
+                              </li>
+                            ))}
+                            {aiReview.suggestedChanges.stop && <li>Stop rule → {describeStopRule(aiReview.suggestedChanges.stop)}</li>}
+                            {aiReview.suggestedChanges.target && <li>Target rule → {describeTargetRule(aiReview.suggestedChanges.target)}</li>}
+                          </ul>
+                        </div>
+                      )}
                       <p className="text-[10px] text-muted">
                         Apply suggestions with the Setup controls — min score, direction, max hold, the entry regime filter, condition weights — or edit SL/TP rules in the Strategy Lab, then re-run and validate with walk-forward. AI suggestions are hypotheses; educational analysis only, not financial advice.
                       </p>
@@ -1558,8 +1670,68 @@ export default function BacktestPage() {
               >
                 {tlLoading ? "Running…" : "Run trendline backtest"}
               </button>
+              <button
+                onClick={runTrendlineFibSweep}
+                disabled={tlSweepLoading}
+                className="rounded-md border border-edge px-3 py-1.5 text-xs font-semibold hover:bg-edge disabled:opacity-50"
+                title="Backtest every TP fib level against several max-pullback waits on the same candles"
+              >
+                {tlSweepLoading ? "Sweeping…" : "Sweep TP × wait"}
+              </button>
             </div>
             {tlError && <p className="mt-2 text-xs text-bear">{tlError}</p>}
+            {tlSweep && (
+              <div className="mt-3">
+                <p className="text-xs text-muted">
+                  Total R (trades) per TP fib × max pullback wait — best cell highlighted. Click a cell to load it into the inputs above.
+                </p>
+                <div className="mt-2 overflow-x-auto">
+                  <table className="text-xs">
+                    <thead className="text-muted">
+                      <tr>
+                        <th className="py-1 pr-3 text-left">TP fib \ wait</th>
+                        {TLF_SWEEP_WAITS.map((w) => (
+                          <th key={w} className="px-2 py-1 text-right">
+                            {w}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {FIB_TARGET_LEVELS.map((f) => {
+                        const best = tlSweep.reduce((m, c) => (c.trades > 0 && c.totalR > m ? c.totalR : m), -Infinity);
+                        return (
+                          <tr key={f} className="border-t border-edge">
+                            <td className="py-1 pr-3 font-mono">{f}</td>
+                            {TLF_SWEEP_WAITS.map((w) => {
+                              const cell = tlSweep.find((c) => c.target === f && c.maxWait === w);
+                              if (!cell) return <td key={w} />;
+                              const isBest = cell.trades > 0 && cell.totalR === best;
+                              return (
+                                <td key={w} className="px-1 py-0.5 text-right">
+                                  <button
+                                    onClick={() => {
+                                      setTlTarget(f);
+                                      setTlMaxWait(w);
+                                    }}
+                                    title={`TP ${f} · wait ${w} — ${cell.trades} trades, ${cell.winRatePct}% win, PF ${Number.isFinite(cell.profitFactor) ? cell.profitFactor : "∞"}, max DD ${cell.maxDrawdownR}R`}
+                                    className={`w-full rounded px-1.5 py-0.5 text-right font-mono hover:bg-edge ${
+                                      isBest ? "bg-accent text-white" : cell.totalR > 0 ? "text-bull" : cell.totalR < 0 ? "text-bear" : "text-muted"
+                                    }`}
+                                  >
+                                    {cell.trades > 0 ? `${cell.totalR >= 0 ? "+" : ""}${cell.totalR}R (${cell.trades})` : "—"}
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
             {tlResult && (
               <div className="mt-3 space-y-3">
                 <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">

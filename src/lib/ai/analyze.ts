@@ -1,7 +1,9 @@
 import type { PatternMemory } from "@/lib/ai/memory";
 import type { EconomicEvent } from "@/lib/calendar/types";
 import type { NewsHeadline } from "@/lib/news/provider";
-import { CONDITION_LIBRARY, isConditionId, type CustomStrategy } from "@/lib/strategies/custom";
+import { CONDITION_IDS, CONDITION_LIBRARY, isConditionId, type ConditionId, type CustomStrategy } from "@/lib/strategies/custom";
+import type { RegimeLabel } from "@/lib/strategies/regime";
+import type { StopRule, TargetRule } from "@/lib/strategies/risk";
 import type { Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 import { describeUserCondition, type UserCondition } from "@/lib/strategies/userConditions";
 
@@ -327,6 +329,73 @@ export async function reviewJournal(payload: unknown): Promise<JournalReview> {
   };
 }
 
+/**
+ * Machine-applyable subset of a backtest review: every field maps 1:1 onto a
+ * control in the Backtest setup or strategy editor, so the UI can apply the
+ * AI's suggestions as a new strategy variant and retest without retyping.
+ */
+export interface SuggestedChanges {
+  minScore?: number;
+  direction?: "long" | "short" | "both";
+  /** regimes to keep trading (all others filtered out) */
+  regimes?: RegimeLabel[];
+  maxHoldBars?: number;
+  conditionWeights?: { id: ConditionId; weight: number }[];
+  stop?: StopRule;
+  target?: TargetRule;
+}
+
+const REGIME_LABELS: readonly string[] = ["trending_up", "trending_down", "ranging", "volatile"];
+
+function sanitizeStopRule(raw: unknown): StopRule | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (r.type === "atr" && typeof r.multiple === "number" && r.multiple > 0 && r.multiple <= 10) return { type: "atr", multiple: r.multiple };
+  if (r.type === "percent" && typeof r.percent === "number" && r.percent > 0 && r.percent <= 20) return { type: "percent", percent: r.percent };
+  if (r.type === "swing" && typeof r.bufferAtr === "number" && r.bufferAtr >= 0 && r.bufferAtr <= 5) return { type: "swing", bufferAtr: r.bufferAtr };
+  if (r.type === "hvn" && typeof r.bufferAtr === "number" && r.bufferAtr >= 0 && r.bufferAtr <= 5) return { type: "hvn", bufferAtr: r.bufferAtr };
+  return undefined;
+}
+
+function sanitizeTargetRule(raw: unknown): TargetRule | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  if (r.type === "rr" && typeof r.ratio === "number" && r.ratio > 0 && r.ratio <= 20) return { type: "rr", ratio: r.ratio };
+  if (r.type === "atr" && typeof r.multiple === "number" && r.multiple > 0 && r.multiple <= 20) return { type: "atr", multiple: r.multiple };
+  if (r.type === "swing") return { type: "swing" };
+  if (r.type === "hvn") return { type: "hvn" };
+  return undefined;
+}
+
+function sanitizeSuggestedChanges(raw: unknown): SuggestedChanges | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const r = raw as Record<string, unknown>;
+  const out: SuggestedChanges = {};
+  if (typeof r.minScore === "number" && r.minScore >= 0 && r.minScore <= 100) out.minScore = Math.round(r.minScore);
+  if (r.direction === "long" || r.direction === "short" || r.direction === "both") out.direction = r.direction;
+  if (Array.isArray(r.regimes)) {
+    const regs = r.regimes.filter((x): x is RegimeLabel => typeof x === "string" && REGIME_LABELS.includes(x));
+    if (regs.length > 0 && regs.length < 4) out.regimes = [...new Set(regs)];
+  }
+  if (typeof r.maxHoldBars === "number" && r.maxHoldBars >= 5 && r.maxHoldBars <= 1000) out.maxHoldBars = Math.round(r.maxHoldBars);
+  if (Array.isArray(r.conditionWeights)) {
+    const ws = r.conditionWeights.flatMap((x): { id: ConditionId; weight: number }[] => {
+      if (typeof x !== "object" || x === null) return [];
+      const o = x as Record<string, unknown>;
+      if (typeof o.id === "string" && isConditionId(o.id) && typeof o.weight === "number" && o.weight >= 0 && o.weight <= 50) {
+        return [{ id: o.id, weight: Math.round(o.weight) }];
+      }
+      return [];
+    });
+    if (ws.length > 0) out.conditionWeights = ws;
+  }
+  const stop = sanitizeStopRule(r.stop);
+  if (stop) out.stop = stop;
+  const target = sanitizeTargetRule(r.target);
+  if (target) out.target = target;
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
 export interface BacktestReview {
   overview: string;
   edgeAssessment: string;
@@ -334,6 +403,7 @@ export interface BacktestReview {
   exitAnalysis: string;
   refinements: string[];
   caveats: string;
+  suggestedChanges?: SuggestedChanges;
 }
 
 /**
@@ -353,12 +423,14 @@ export async function reviewBacktest(payload: unknown): Promise<BacktestReview> 
       "Diagnose where the strategy leaks money and how to tighten it: regimes to filter out or trade only, whether the min score threshold should move, direction bias, whether losers are stop-outs vs time exits (hold-time or target sizing issues), and score-vs-outcome patterns.",
       `When suggesting refinements, only reference parameters and conditions the platform supports: min score threshold, direction filter (long/short/both), the entry-regime filter (trending up/down, ranging, volatile — toggled in the Backtest setup), max hold bars, condition weights (adjustable in Custom-strategy mode; a built-in confluence run can be recreated there to weight individual conditions), one global stop/target placement rule per strategy (set in the Strategy Lab: ATR multiple, fixed %, beyond recent swing or HVN for stops; R-multiple, next HVN/swing, ATR multiple for targets), and these conditions: ${supported}. The platform does NOT support regime-conditional or session-conditional exits/targets, per-trade asymmetric R targets, time-of-day filters, or any parameter not listed — never suggest those. Every refinement must map to one of the listed controls so the user can apply it directly and retest (e.g. "raise min score to 65", "trade long-only", "untick volatile in the entry-regime filter"), not platitudes.`,
       "Warn about overfitting: small samples (under ~30 trades), or tuning to one symbol/timeframe/window. Recommend validating changes with the platform's walk-forward tool. Educational analysis only, not financial advice.",
-      'Respond ONLY with JSON: {"overview": string, "edgeAssessment": string, "regimeAdvice": string, "exitAnalysis": string, "refinements": [string], "caveats": string}. Each string field 2-4 sentences; refinements is 3-6 short actionable items.',
+      'Respond ONLY with JSON: {"overview": string, "edgeAssessment": string, "regimeAdvice": string, "exitAnalysis": string, "refinements": [string], "caveats": string, "suggestedChanges": object?}. Each string field 2-4 sentences; refinements is 3-6 short actionable items.',
+      `suggestedChanges is the machine-applyable version of your refinements — the platform applies it directly to the strategy settings as a new variant for retesting. Include ONLY the keys you are recommending changes for (omit the object entirely if none apply): {"minScore": number 0-100, "direction": "long"|"short"|"both", "regimes": array (subset of ["trending_up","trending_down","ranging","volatile"] to KEEP trading), "maxHoldBars": number, "conditionWeights": [{"id": one of [${CONDITION_IDS.join(", ")}], "weight": number 0-50, 0 disables}], "stop": {"type":"atr","multiple":n}|{"type":"percent","percent":n}|{"type":"swing","bufferAtr":n}|{"type":"hvn","bufferAtr":n}, "target": {"type":"rr","ratio":n}|{"type":"atr","multiple":n}|{"type":"swing"}|{"type":"hvn"}}. It must mirror the prose refinements exactly — never suggest a change in prose without its suggestedChanges key or vice versa (refinements that don't map to these keys stay prose-only).`,
     ].join(" "),
     JSON.stringify(payload),
     1800,
   );
-  const parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as Partial<BacktestReview>;
+  const parsed = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1)) as Partial<BacktestReview> & { suggestedChanges?: unknown };
+  const suggestedChanges = sanitizeSuggestedChanges(parsed.suggestedChanges);
   return {
     overview: parsed.overview ?? "",
     edgeAssessment: parsed.edgeAssessment ?? "",
@@ -366,6 +438,7 @@ export async function reviewBacktest(payload: unknown): Promise<BacktestReview> 
     exitAnalysis: parsed.exitAnalysis ?? "",
     refinements: Array.isArray(parsed.refinements) ? parsed.refinements.filter((r): r is string => typeof r === "string") : [],
     caveats: parsed.caveats ?? "",
+    ...(suggestedChanges ? { suggestedChanges } : {}),
   };
 }
 
