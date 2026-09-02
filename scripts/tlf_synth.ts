@@ -27,10 +27,12 @@ interface Bar {
   h: number;
   l: number;
   c: number;
+  /** volume (0 = feed without volume, the surge filter is skipped) */
+  v?: number;
 }
 
 function toCandles(bars: Bar[]): Candle[] {
-  return bars.map((b, i) => ({ time: 1_700_000_000 + i * 3600, open: b.o, high: b.h, low: b.l, close: b.c, volume: 1000 }));
+  return bars.map((b, i) => ({ time: 1_700_000_000 + i * 3600, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v ?? 0 }));
 }
 
 /** Flat noise bar around a level (keeps ATR ~2). */
@@ -232,9 +234,45 @@ const lineAt = (i: number) => 180 - 0.8 * (i - 40); // resistance value at candl
   }
 }
 
+// ── 5b. Weak break impulse rejected (impulse filter) ─────────────────────
+{
+  // shallow leg: no deep swing low, break candle barely clears — fib range stays small vs ATR
+  const shallow = downtrend({ bars: 46, start: 180, slope: -0.8, touchAt: [5, 20, 35] });
+  const bars = [...WARMUP, ...shallow];
+  const lv = lineAt(bars.length);
+  bars.push({ o: lv - 3, h: lv + 2.6, l: lv - 3.2, c: lv + 2.5 }); // decisive green close, but a small leg
+  const strict = { ...DEFAULT_TRENDLINE_FIB_FILTERS, momentumFilter: false, minImpulseAtr: 8 };
+  const setup = detectTrendlineFibSetup(toCandles(bars), DEFAULT_FIB_TARGET, strict);
+  check(
+    "weak break impulse rejected (impulse filter)",
+    setup !== null && setup.state === "invalidated" && setup.stateDetail.includes("weak break impulse"),
+    `state=${setup?.state ?? "null"} detail=${setup?.stateDetail ?? ""}`,
+  );
+  const setupOff = detectTrendlineFibSetup(toCandles(bars), DEFAULT_FIB_TARGET, { ...strict, impulseFilter: false });
+  check("same break arms with the impulse filter off", setupOff !== null && setupOff.state === "awaiting_pullback", `state=${setupOff?.state ?? "null"} detail=${setupOff?.stateDetail ?? ""}`);
+}
+
+// ── 5c. No volume surge on the break rejected (volume filter) ─────────────
+{
+  const quiet = [...WARMUP, ...DOWN].map((b) => ({ ...b, v: 1000 }));
+  const lv = lineAt(quiet.length);
+  const noSurge = [...quiet, { o: lv - 6, h: lv + 7, l: lv - 6.5, c: lv + 6, v: 1100 }]; // strong close, ordinary volume
+  const s1 = detectTrendlineFibSetup(toCandles(noSurge));
+  check(
+    "break without a volume surge rejected (volume filter)",
+    s1 !== null && s1.state === "invalidated" && s1.stateDetail.includes("volume"),
+    `state=${s1?.state ?? "null"} detail=${s1?.stateDetail ?? ""}`,
+  );
+  const surge = [...quiet, { o: lv - 6, h: lv + 7, l: lv - 6.5, c: lv + 6, v: 2000 }]; // 2× the average
+  const s2 = detectTrendlineFibSetup(toCandles(surge));
+  check("same break with a 2× volume surge arms", s2 !== null && s2.state === "awaiting_pullback", `state=${s2?.state ?? "null"} detail=${s2?.stateDetail ?? ""}`);
+  const zeroVol = detectTrendlineFibSetup(toCandles([...WARMUP, ...DOWN, { o: lv - 6, h: lv + 7, l: lv - 6.5, c: lv + 6 }]));
+  check("volume filter is skipped when the feed has no volume", zeroVol !== null && zeroVol.state === "awaiting_pullback", `state=${zeroVol?.state ?? "null"}`);
+}
+
 // ── 8b. Fib anchors to the first DIRECTIONAL close through the line ──────
 {
-  const noFilters = { decisiveBreak: false, strongBreakCandle: false, momentumFilter: false };
+  const noFilters = { decisiveBreak: false, strongBreakCandle: false, momentumFilter: false, impulseFilter: false, minImpulseAtr: 0, volumeSurge: false, volSurgeRatio: 1 };
 
   // a red candle closes above the line first; the fib must anchor to the
   // following green close-through, not the red one

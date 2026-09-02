@@ -727,7 +727,7 @@ sellSignal = ta.crossunder(hist, 0) and close < trendEma
  * TP at a selectable fib extension (2.618 default). Pivots confirm pivotLen
  * bars later (no repaint).
  */
-const TRENDLINE_FIB_PINE_BUILD = "v4";
+const TRENDLINE_FIB_PINE_BUILD = "v5";
 
 function trendlineFibPineScript(cfg: PineConfig): string {
   const riskPercent = cfg.riskPercent ?? 1;
@@ -765,8 +765,14 @@ useDecisive = input.bool(true, "Decisive break (close must clear the line by the
 breakMargin = input.float(0.15, "Decisive break margin (ATR)", minval=0.0, step=0.05)
 useStrong   = input.bool(true, "Strong break candle", tooltip="The break candle must be a directional candle: correct colour with a body at least half its range.")
 useMomentum = input.bool(true, "Momentum agreement (RSI)", tooltip="RSI(14) must be above 50 on a bullish break / below 50 on a bearish break.")
+useImpulse  = input.bool(true, "Break impulse filter", tooltip="The break leg (fib 0 swing to the anchor candle) must span at least the ATR minimum below — weak-momentum breaks that barely move off the swing are skipped.")
+minImpulse  = input.float(2.5, "Min break leg (ATR)", minval=0.5, step=0.5)
+useVolSurge = input.bool(true, "Volume surge on the break", tooltip="The anchor candle's volume must be at least the multiple below of the 20-bar average volume — breaks without participation are skipped. Ignored when the symbol has no volume data.")
+volSurgeMul = input.float(1.2, "Min volume vs 20-bar average", minval=1.0, step=0.1)
 
 atrValue = ta.atr(14)
+volAvg = ta.sma(volume, 20)
+volOk = not useVolSurge or na(volume) or volume <= 0 or na(volAvg) or volAvg <= 0 or volume >= volSurgeMul * volAvg
 rsiValue = ta.rsi(close, 14)
 ph = ta.pivothigh(high, pivotLen, pivotLen)
 pl = ta.pivotlow(low, pivotLen, pivotLen)
@@ -936,7 +942,8 @@ if rState == 4
         strongOk = not useStrong or (high - low <= 0 or math.abs(close - open) >= 0.5 * (high - low))
         momentumOk = not useMomentum or rsiValue > 50
         fibRange = high - rSwing
-        if strongOk and momentumOk and fibRange > 0
+        impulseOk = not useImpulse or fibRange >= minImpulse * atrValue
+        if strongOk and momentumOk and impulseOk and volOk and fibRange > 0
             rEntry := rSwing + entryFib * fibRange
             rSl := rSwing - slBufAtr * atrValue
             rTp := rSwing + targetFib * fibRange
@@ -957,7 +964,8 @@ if sState == 4
         strongOk = not useStrong or (high - low <= 0 or math.abs(close - open) >= 0.5 * (high - low))
         momentumOk = not useMomentum or rsiValue < 50
         fibRange = sSwing - low
-        if strongOk and momentumOk and fibRange > 0
+        impulseOk = not useImpulse or fibRange >= minImpulse * atrValue
+        if strongOk and momentumOk and impulseOk and volOk and fibRange > 0
             sEntry := sSwing - entryFib * fibRange
             sSl := sSwing + slBufAtr * atrValue
             sTp := sSwing - targetFib * fibRange

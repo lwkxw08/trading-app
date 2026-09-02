@@ -79,6 +79,9 @@ const STRONG_BODY_RATIO = 0.5; // strong break candle: body at least this fracti
 const SL_BUFFER_ATR = 0.25; // "just outside" the swing extreme
 const MAX_LINE_AGE_BARS = 60; // a forming line is only watched while its last touch is recent
 const ANCHOR_WAIT_BARS = 5; // the directional close anchoring the fib must arrive this soon after the break
+const VOL_AVG_BARS = 20; // lookback for the average volume the surge is measured against
+export const DEFAULT_MIN_IMPULSE_ATR = 2.5;
+export const DEFAULT_VOL_SURGE_RATIO = 1.2;
 
 /** Confirmation checks that the price action is heading in the break direction (all on by default). */
 export interface TrendlineFibFilters {
@@ -88,12 +91,22 @@ export interface TrendlineFibFilters {
   strongBreakCandle: boolean;
   /** RSI(14) must agree with the break direction on the break bar (> 50 buys, < 50 sells) */
   momentumFilter: boolean;
+  /** the break leg (fib 0 → fib 1) must span at least `minImpulseAtr` ATRs — screens out weak-momentum breaks */
+  impulseFilter: boolean;
+  minImpulseAtr: number;
+  /** the anchor candle's volume must be at least `volSurgeRatio`× the recent average (skipped when the feed has no volume) */
+  volumeSurge: boolean;
+  volSurgeRatio: number;
 }
 
 export const DEFAULT_TRENDLINE_FIB_FILTERS: TrendlineFibFilters = {
   decisiveBreak: true,
   strongBreakCandle: true,
   momentumFilter: true,
+  impulseFilter: true,
+  minImpulseAtr: DEFAULT_MIN_IMPULSE_ATR,
+  volumeSurge: true,
+  volSurgeRatio: DEFAULT_VOL_SURGE_RATIO,
 };
 
 interface Line {
@@ -252,6 +265,29 @@ function breakConfirmed(candles: Candle[], breakIdx: number, bullish: boolean, r
       return "momentum (RSI) against the break";
     }
   }
+  if (filters.volumeSurge && c.volume > 0) {
+    let sum = 0;
+    let n = 0;
+    for (let i = Math.max(0, breakIdx - VOL_AVG_BARS); i < breakIdx; i++) {
+      sum += candles[i].volume;
+      n++;
+    }
+    const avg = n > 0 ? sum / n : 0;
+    if (avg > 0 && c.volume < filters.volSurgeRatio * avg) {
+      return "no volume surge on the break";
+    }
+  }
+  return null;
+}
+
+/** The break-impulse check: the fib leg must span enough ATRs to show real momentum. */
+function impulseRejected(candles: Candle[], anchorIdx: number, atr14: (number | null)[], levels: BreakLevels, filters: TrendlineFibFilters): string | null {
+  if (!filters.impulseFilter) return null;
+  const atrHere = atr14[anchorIdx] ?? candles[anchorIdx].close * 0.01;
+  const legAtr = Math.abs(levels.fibOne - levels.swingPrice) / atrHere;
+  if (legAtr < filters.minImpulseAtr) {
+    return `weak break impulse — the break leg spans ${legAtr.toFixed(1)} ATR, below the ${filters.minImpulseAtr} ATR minimum`;
+  }
   return null;
 }
 
@@ -373,6 +409,22 @@ export function detectTrendlineFibSetup(
       takeProfit: null,
       state: "invalidated",
       stateDetail: "Degenerate fib range at the break",
+    };
+  }
+
+  const weakImpulse = impulseRejected(candles, anchorIdx, atr14, levels, filters);
+  if (weakImpulse) {
+    return {
+      ...baseInfo,
+      ...breakInfo,
+      fibOne: levels.fibOne,
+      swingPrice: levels.swingPrice,
+      swingTime: candles[levels.swingIndex].time,
+      entry: null,
+      stopLoss: null,
+      takeProfit: null,
+      state: "invalidated",
+      stateDetail: `Trendline break rejected — ${weakImpulse}`,
     };
   }
 
@@ -540,6 +592,10 @@ export function backtestTrendlineFib(
     }
     const levels = fibLevels(candles, line, anchorIdx, atr14, targetFib);
     if (!levels) {
+      filtered++;
+      continue;
+    }
+    if (impulseRejected(candles, anchorIdx, atr14, levels, filters) !== null) {
       filtered++;
       continue;
     }

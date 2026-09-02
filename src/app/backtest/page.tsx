@@ -26,7 +26,7 @@ import { addSavedStrategy, loadSavedStrategies, updateSavedStrategy, type SavedS
 import { describeUserCondition, loadUserConditions, saveUserConditions, type UserCondition } from "@/lib/strategies/userConditions";
 import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
 import { backtestStochReversal, DEFAULT_STOCH_REVERSAL_FILTERS, STOCH_REVERSAL_STRATEGY_NAME, type StochReversalBacktest, type StochReversalEntryMode, type StochReversalFilters } from "@/lib/strategies/stochReversal";
-import { backtestTrendlineFib, DEFAULT_FIB_TARGET, DEFAULT_MAX_PULLBACK_BARS, DEFAULT_TRENDLINE_FIB_FILTERS, ENTRY_FIB, FIB_TARGET_LEVELS, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibBacktest, type TrendlineFibFilters } from "@/lib/strategies/trendlineFib";
+import { backtestTrendlineFib, DEFAULT_FIB_TARGET, DEFAULT_MAX_PULLBACK_BARS, DEFAULT_MIN_IMPULSE_ATR, DEFAULT_TRENDLINE_FIB_FILTERS, DEFAULT_VOL_SURGE_RATIO, ENTRY_FIB, FIB_TARGET_LEVELS, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibBacktest, type TrendlineFibFilters } from "@/lib/strategies/trendlineFib";
 
 // Backtests run in the browser: the server only supplies candle history
 // (pure I/O), so long simulations never hit the host's per-request CPU limit.
@@ -1648,6 +1648,42 @@ export default function BacktestPage() {
                       onChange={(e) => setTlFilters({ ...tlFilters, momentumFilter: e.target.checked })}
                     />
                     RSI momentum
+                  </label>
+                  <label className="flex items-center gap-1" title="The break leg (fib 0 → fib 1) must span at least this many ATRs — screens out weak-momentum breaks">
+                    <input
+                      type="checkbox"
+                      checked={tlFilters.impulseFilter}
+                      onChange={(e) => setTlFilters({ ...tlFilters, impulseFilter: e.target.checked })}
+                    />
+                    Break impulse ≥
+                    <input
+                      type="number"
+                      min={0.5}
+                      max={10}
+                      step={0.5}
+                      value={tlFilters.minImpulseAtr}
+                      onChange={(e) => setTlFilters({ ...tlFilters, minImpulseAtr: Math.max(0.5, Number(e.target.value) || DEFAULT_MIN_IMPULSE_ATR) })}
+                      className="w-14 rounded border border-edge bg-transparent px-1 py-0.5"
+                    />
+                    ATR
+                  </label>
+                  <label className="flex items-center gap-1" title="The break candle's volume must be at least this multiple of the 20-bar average (skipped when the feed has no volume)">
+                    <input
+                      type="checkbox"
+                      checked={tlFilters.volumeSurge}
+                      onChange={(e) => setTlFilters({ ...tlFilters, volumeSurge: e.target.checked })}
+                    />
+                    Volume surge ≥
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      step={0.1}
+                      value={tlFilters.volSurgeRatio}
+                      onChange={(e) => setTlFilters({ ...tlFilters, volSurgeRatio: Math.max(1, Number(e.target.value) || DEFAULT_VOL_SURGE_RATIO) })}
+                      className="w-14 rounded border border-edge bg-transparent px-1 py-0.5"
+                    />
+                    × avg
                   </label>
                 </div>
               </div>
