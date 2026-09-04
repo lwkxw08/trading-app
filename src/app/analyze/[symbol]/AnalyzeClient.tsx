@@ -27,6 +27,7 @@ import { SESSION_OPEN_STRATEGY_NAME, type SessionOpenSetup } from "@/lib/strateg
 import { PULLBACK_VALUE_STRATEGY_NAME, type PullbackValueSetup } from "@/lib/strategies/pullbackValue";
 import { STOCH_REVERSAL_STRATEGY_NAME, type StochReversalSetup } from "@/lib/strategies/stochReversal";
 import { ENTRY_FIB, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibSetup } from "@/lib/strategies/trendlineFib";
+import { POC_AMD_STRATEGY_NAME, type PocAmdSetup } from "@/lib/strategies/pocAmd";
 import type { HvnFvgPullback, Opportunity, StrategyAnalysis } from "@/lib/strategies/types";
 
 type AnalysisPayload = Omit<StrategyAnalysis, "candles">;
@@ -75,6 +76,9 @@ export default function AnalyzeSymbol() {
   const [tlSetup, setTlSetup] = useState<TrendlineFibSetup | null>(null);
   const [tlSelected, setTlSelected] = useState(false);
   const [tlLogged, setTlLogged] = useState(false);
+  const [pocSetup, setPocSetup] = useState<PocAmdSetup | null>(null);
+  const [pocSelected, setPocSelected] = useState(false);
+  const [pocLogged, setPocLogged] = useState(false);
   const [drawMode, setDrawMode] = useState(false);
   const [drawings, setDrawings] = useState<number[]>([]);
   const [news, setNews] = useState<NewsHeadline[]>([]);
@@ -187,6 +191,20 @@ export default function AnalyzeSymbol() {
       fetch(apiUrl(`/api/setups/trendlinefib?symbol=${symbol}&tf=${tf}`))
         .then((r) => r.json())
         .then((d) => setTlSetup(d.setup ?? null))
+        .catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, [symbol, tf]);
+
+  useEffect(() => {
+    setPocSetup(null);
+    setPocSelected(false);
+    setPocLogged(false);
+    const load = () =>
+      fetch(apiUrl(`/api/setups/pocamd?symbol=${symbol}&tf=${tf}`))
+        .then((r) => r.json())
+        .then((d) => setPocSetup(d.setup ?? null))
         .catch(() => {});
     load();
     const t = setInterval(load, 60_000);
@@ -373,6 +391,41 @@ export default function AnalyzeSymbol() {
     [symbol, tf, analysis],
   );
 
+  const logPocToJournal = useCallback(
+    (s: PocAmdSetup) => {
+      if (s.entry === null || s.stopLoss === null || s.takeProfit === null || s.direction === null) return;
+      const trade: JournalTrade = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        symbol,
+        timeframe: tf,
+        direction: s.direction === "bullish" ? "long" : "short",
+        status: "open",
+        entryPrice: s.entry,
+        entryTime: Date.now(),
+        size: null,
+        stopLoss: s.stopLoss,
+        takeProfit: s.takeProfit,
+        strategyName: POC_AMD_STRATEGY_NAME,
+        notes: `Logged from analysis card · POC ${fmtPrice(s.poc)} · swept ${s.direction === "bullish" ? "below" : "above"} the range to ${fmtPrice(s.sweepPrice ?? 0)} · distribution closed through the POC · entry at the POC pullback · TP at ${s.rrTarget}R`,
+        snapshot: analysis
+          ? {
+              trendDirection: analysis.trend.direction,
+              htfDirection: analysis.higherTimeframeTrend?.direction,
+              rsi14: analysis.trend.rsi14,
+              confluenceScore: null,
+              factors: [],
+            }
+          : null,
+        exitPrice: null,
+        exitTime: null,
+        exitNotes: "",
+      };
+      saveTrades([trade, ...loadTrades()]);
+      setPocLogged(true);
+    },
+    [symbol, tf, analysis],
+  );
+
   const logSetupToJournal = useCallback(
     (s: HvnFvgPullback, key: string) => {
       const bull = s.direction === "bullish";
@@ -500,6 +553,23 @@ export default function AnalyzeSymbol() {
   }, [analysis, layers.volumeProfile]);
 
   const setupOverlay = useMemo<SetupOverlay | null>(() => {
+    if (pocSelected && pocSetup && pocSetup.entry !== null && pocSetup.stopLoss !== null && pocSetup.takeProfit !== null && pocSetup.direction !== null && pocSetup.sweepTime !== null && pocSetup.sweepPrice !== null && pocSetup.breakTime !== null && pocSetup.breakClose !== null) {
+      return {
+        direction: pocSetup.direction,
+        impulseFromTime: pocSetup.sweepTime,
+        impulseFromPrice: pocSetup.sweepPrice,
+        impulseToTime: pocSetup.breakTime,
+        impulseToPrice: pocSetup.breakClose,
+        zoneTop: pocSetup.boxHigh,
+        zoneBottom: pocSetup.boxLow,
+        zoneFrom: pocSetup.boxStartTime,
+        target: pocSetup.takeProfit,
+        stopLoss: pocSetup.stopLoss,
+        entry: pocSetup.entry,
+        lineLabel: "distribution leg",
+        zoneLabel: "consolidation · entry at the POC",
+      };
+    }
     if (tlSelected && tlSetup && tlSetup.entry !== null && tlSetup.stopLoss !== null && tlSetup.takeProfit !== null && tlSetup.fibOne !== null && tlSetup.breakTime !== null) {
       return {
         direction: tlSetup.direction,
@@ -547,7 +617,7 @@ export default function AnalyzeSymbol() {
       target: selectedSetup.target,
       stopLoss: selectedSetup.stopLoss,
     };
-  }, [selectedSetup, tbSelected, tbSetup, tlSelected, tlSetup]);
+  }, [selectedSetup, tbSelected, tbSetup, tlSelected, tlSetup, pocSelected, pocSetup]);
 
   const zones = useMemo<ZoneBox[]>(() => {
     if (!analysis) return [];
@@ -1214,6 +1284,87 @@ export default function AnalyzeSymbol() {
                       {tlLogged ? "Logged to Journal" : "Log to Journal"}
                     </button>
                     {tlLogged && (
+                      <Link href="/journal" className="text-[11px] text-accent hover:underline" onClick={(e) => e.stopPropagation()}>
+                        View in Journal
+                      </Link>
+                    )}
+                  </div>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* Volume profile POC break & retest setup */}
+          {pocSetup && (
+            <section className="rounded-lg border border-edge bg-surface p-4 text-sm">
+              <h2 className="mb-2 font-semibold">{POC_AMD_STRATEGY_NAME} · {tf}</h2>
+              <div
+                onClick={() => {
+                  if (pocSetup.entry !== null && pocSetup.state !== "invalidated" && pocSetup.state !== "completed") {
+                    setPocSelected((v) => !v);
+                  }
+                }}
+                className={`rounded-md border p-2 ${
+                  pocSetup.state === "invalidated" || pocSetup.state === "completed" || pocSetup.entry === null
+                    ? "border-edge opacity-80"
+                    : `cursor-pointer ${pocSelected ? "border-accent ring-1 ring-accent" : "border-edge hover:border-accent/50"}`
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <span
+                    className={`font-semibold ${
+                      pocSetup.direction === "bullish" ? "text-bull" : pocSetup.direction === "bearish" ? "text-bear" : ""
+                    }`}
+                  >
+                    {pocSetup.direction === "bullish" ? "BUY setup" : pocSetup.direction === "bearish" ? "SELL setup" : "No bias yet"}
+                  </span>
+                  <span
+                    className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                      pocSetup.state === "awaiting_pullback" || pocSetup.state === "triggered"
+                        ? "bg-bull/15 text-bull"
+                        : pocSetup.state === "invalidated"
+                          ? "bg-bear/15 text-bear"
+                          : pocSetup.state === "completed"
+                            ? "bg-edge text-muted"
+                            : "bg-amber-500/15 text-amber-400"
+                    }`}
+                  >
+                    {pocSetup.state === "completed" ? "played out" : pocSetup.state.replace(/_/g, " ")}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-muted">
+                  Consolidation {fmtPrice(pocSetup.boxLow)}–{fmtPrice(pocSetup.boxHigh)} · POC {fmtPrice(pocSetup.poc)}
+                  {pocSetup.sweepPrice !== null ? ` · sweep ${fmtPrice(pocSetup.sweepPrice)}` : ""} · {pocSetup.stateDetail}
+                </p>
+                {pocSetup.entry !== null && pocSetup.stopLoss !== null && pocSetup.takeProfit !== null && (
+                  <p className="mt-1 text-xs text-muted">
+                    Entry (POC) {fmtPrice(pocSetup.entry)} · SL {fmtPrice(pocSetup.stopLoss)} · TP ({pocSetup.rrTarget}R){" "}
+                    {fmtPrice(pocSetup.takeProfit)}
+                  </p>
+                )}
+                {(pocSetup.state === "forming" || pocSetup.state === "manipulated") && (
+                  <p className="mt-1 text-[10px] text-amber-400">
+                    Forming — the setup only activates once the distribution CLOSES through the POC; updates every minute.
+                  </p>
+                )}
+                {pocSetup.entry !== null && pocSetup.state !== "invalidated" && pocSetup.state !== "completed" && (
+                  <p className="mt-1 text-[10px] text-accent">
+                    {pocSelected ? "Shown on chart — click to hide" : "Click to show on chart"}
+                  </p>
+                )}
+                {(pocSetup.state === "awaiting_pullback" || pocSetup.state === "triggered") && pocSetup.entry !== null && (
+                  <div className="mt-2 flex items-center gap-3">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        logPocToJournal(pocSetup);
+                      }}
+                      disabled={pocLogged}
+                      className="rounded-md bg-accent px-2.5 py-1 text-[11px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+                    >
+                      {pocLogged ? "Logged to Journal" : "Log to Journal"}
+                    </button>
+                    {pocLogged && (
                       <Link href="/journal" className="text-[11px] text-accent hover:underline" onClick={(e) => e.stopPropagation()}>
                         View in Journal
                       </Link>

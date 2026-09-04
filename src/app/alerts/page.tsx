@@ -244,7 +244,9 @@ export default function AlertsPage() {
                             ? `Stoch Double Top/Bottom ready · ${r.direction} · ${r.symbols || "default universe"}`
                             : r.setup === "trendlinefib"
                               ? `Trendline Break + Fib ready · ${r.direction} · ${r.symbols || "default universe"}`
-                              : `Setup ≥${r.minScore} · ${r.direction} · ${r.tf} · ${r.symbols || "default universe"}`}
+                              : r.setup === "pocamd"
+                                ? `Volume POC Break & Retest ready · ${r.direction} · ${r.symbols || "default universe"}`
+                                : `Setup ≥${r.minScore} · ${r.direction} · ${r.tf} · ${r.symbols || "default universe"}`}
                 </span>
                 <span className="text-muted">{r.cooldownMin}m cooldown</span>
                 <button onClick={() => deleteRule(r.id)} className="text-bear hover:underline">

@@ -13,6 +13,7 @@ import { detectSessionOpenSetup, sessionOpenOpportunity, sessionOpenWatchItem, t
 import { detectPullbackValueSetup, pullbackValueOpportunity, pullbackValueWatchItem, type PullbackValueWatch } from "@/lib/strategies/pullbackValue";
 import { detectStochReversalSetup, stochReversalOpportunity, stochReversalWatchItem, type StochReversalWatch } from "@/lib/strategies/stochReversal";
 import { detectTrendlineFibSetup, trendlineFibOpportunity, trendlineFibWatchItem, type TrendlineFibWatch } from "@/lib/strategies/trendlineFib";
+import { detectPocAmdSetup, pocAmdOpportunity, pocAmdWatchItem, type PocAmdWatch } from "@/lib/strategies/pocAmd";
 import type { EconomicEvent } from "@/lib/calendar/types";
 import type { Opportunity } from "@/lib/strategies/types";
 
@@ -126,6 +127,27 @@ async function runTrendlineFibScan(tf: Timeframe, symbols: string[]) {
   return { tf, scanned: symbols.length, errors, opportunities, watching };
 }
 
+async function runPocAmdScan(tf: Timeframe, symbols: string[]) {
+  const results = await Promise.allSettled(
+    symbols.map(async (symbol): Promise<{ opps: Opportunity[]; watching: PocAmdWatch[] }> => {
+      const provider = getProviderForSymbol(symbol);
+      const candles = await provider.getCandles(symbol, tf, 500);
+      if (candles.length < 60) return { opps: [], watching: [] };
+      const setup = detectPocAmdSetup(candles);
+      const opp = setup ? pocAmdOpportunity(symbol, tf, setup) : null;
+      const watch = setup ? pocAmdWatchItem(symbol, tf, setup) : null;
+      return { opps: opp ? [opp] : [], watching: watch ? [watch] : [] };
+    }),
+  );
+
+  const fulfilled = results.filter((r): r is PromiseFulfilledResult<{ opps: Opportunity[]; watching: PocAmdWatch[] }> => r.status === "fulfilled");
+  const opportunities = fulfilled.flatMap((r) => r.value.opps).sort((a, b) => b.score - a.score);
+  const watching = fulfilled.flatMap((r) => r.value.watching);
+  const errors = results.filter((r) => r.status === "rejected").length;
+
+  return { tf, scanned: symbols.length, errors, opportunities, watching };
+}
+
 async function runScan(tf: Timeframe, symbols: string[], strategy: CustomStrategy | null) {
   const events: EconomicEvent[] = strategy ? [] : await getEconomicCalendar();
   const htf = higherTimeframe(tf);
@@ -180,6 +202,9 @@ export async function GET(req: NextRequest) {
   }
   if (req.nextUrl.searchParams.get("setup") === "trendlinefib") {
     return NextResponse.json(await runTrendlineFibScan(tf, symbols));
+  }
+  if (req.nextUrl.searchParams.get("setup") === "pocamd") {
+    return NextResponse.json(await runPocAmdScan(tf, symbols));
   }
 
   return NextResponse.json(await runScan(tf, symbols, null));

@@ -27,6 +27,7 @@ import { describeUserCondition, loadUserConditions, saveUserConditions, type Use
 import { backtestSessionOpen, sessionSpecFor, SESSION_OPEN_STRATEGY_NAME, type SessionOpenBacktest } from "@/lib/strategies/sessionOpen";
 import { backtestStochReversal, DEFAULT_STOCH_REVERSAL_FILTERS, STOCH_REVERSAL_STRATEGY_NAME, type StochReversalBacktest, type StochReversalEntryMode, type StochReversalFilters } from "@/lib/strategies/stochReversal";
 import { backtestTrendlineFib, DEFAULT_FIB_TARGET, DEFAULT_MAX_PULLBACK_BARS, DEFAULT_MIN_IMPULSE_ATR, DEFAULT_TRENDLINE_FIB_FILTERS, DEFAULT_VOL_SURGE_RATIO, ENTRY_FIB, FIB_TARGET_LEVELS, TRENDLINE_FIB_STRATEGY_NAME, type TrendlineFibBacktest, type TrendlineFibFilters } from "@/lib/strategies/trendlineFib";
+import { backtestPocAmd, DEFAULT_MIN_DIST_LEG_ATR, DEFAULT_POC_AMD_FILTERS, DEFAULT_POC_MAX_PULLBACK_BARS, DEFAULT_POC_RR_TARGET, DEFAULT_POC_VOL_SURGE_RATIO, POC_AMD_STRATEGY_NAME, type PocAmdBacktest, type PocAmdFilters } from "@/lib/strategies/pocAmd";
 
 // Backtests run in the browser: the server only supplies candle history
 // (pure I/O), so long simulations never hit the host's per-request CPU limit.
@@ -309,6 +310,31 @@ export default function BacktestPage() {
       .catch((e) => setTlError(e instanceof Error ? e.message : "sweep failed"))
       .finally(() => setTlSweepLoading(false));
   }, [tlSymbol, tlTf, tlBars, tlFilters]);
+
+  // Volume Profile POC Break & Retest backtest (dedicated, deliberately simple)
+  const [pocSymbol, setPocSymbol] = useState("BTCUSDT");
+  const [pocTf, setPocTf] = useState<Timeframe>("1h");
+  const [pocBars, setPocBars] = useState(1500);
+  const [pocRr, setPocRr] = useState(DEFAULT_POC_RR_TARGET);
+  const [pocMaxWait, setPocMaxWait] = useState(DEFAULT_POC_MAX_PULLBACK_BARS);
+  const [pocFilters, setPocFilters] = useState<PocAmdFilters>(DEFAULT_POC_AMD_FILTERS);
+  const [pocResult, setPocResult] = useState<PocAmdBacktest | null>(null);
+  const [pocLoading, setPocLoading] = useState(false);
+  const [pocError, setPocError] = useState<string | null>(null);
+
+  const runPocAmd = useCallback(() => {
+    setPocLoading(true);
+    setPocError(null);
+    setPocResult(null);
+    const sym = pocSymbol.toUpperCase();
+    fetchHistory(sym, pocTf, pocBars)
+      .then((h) => {
+        if (h.candles.length < 200) throw new Error("not enough history for this symbol/timeframe");
+        setPocResult(backtestPocAmd(sym, pocTf, h.candles, pocRr, pocFilters, pocMaxWait));
+      })
+      .catch((e) => setPocError(e instanceof Error ? e.message : "backtest failed"))
+      .finally(() => setPocLoading(false));
+  }, [pocSymbol, pocTf, pocBars, pocRr, pocFilters, pocMaxWait]);
 
   useEffect(() => {
     setSavedRuns(loadRuns());
@@ -1853,6 +1879,220 @@ export default function BacktestPage() {
                     No trades — either no 3-touch trendline broke with a candle close in this window, the confirmation
                     filters rejected the breaks, or price never pulled back to the {ENTRY_FIB} entry before running off or
                     closing back through the line.
+                  </p>
+                )}
+              </div>
+            )}
+          </section>
+
+          <section className="rounded-lg border border-edge bg-surface p-4">
+            <h2 className="font-semibold">{POC_AMD_STRATEGY_NAME} backtest</h2>
+            <p className="mt-1 text-xs text-muted">
+              Replays the dedicated detector exactly like live detection: a consolidation box (its volume profile gives
+              the POC) → a manipulation sweep beyond one boundary → the distribution CLOSING back through the POC against
+              the sweep (a wick through never counts) → entry on the pullback that tags the POC → SL just beyond the
+              sweep extreme → TP at the risk multiple you pick. A close back through the POC before the fill, the target
+              running off without the pullback, or the pullback taking longer than the max wait (default{" "}
+              {DEFAULT_POC_MAX_PULLBACK_BARS} candles) cancels the entry. Mirrored both ways: swept below → BUY the POC
+              pullback; swept above → SELL it. Confirmation filters (toggle to compare): a decisive POC break margin, a
+              minimum distribution leg in ATRs, and a volume surge on the break candle (skipped when the feed has no
+              volume). No look-ahead; a bar spanning both SL and TP counts as a stop.
+            </p>
+            <div className="mt-2 flex flex-wrap items-end gap-3 text-sm">
+              <label className="block">
+                <span className="text-xs text-muted">Symbol</span>
+                <div className="mt-1">
+                  <SymbolInput value={pocSymbol} onChange={setPocSymbol} className={`${inputCls} w-40 font-mono uppercase`} />
+                </div>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">Timeframe</span>
+                <select value={pocTf} onChange={(e) => setPocTf(e.target.value as Timeframe)} className={`${inputCls} mt-1 block`}>
+                  {TIMEFRAMES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">TP risk multiple</span>
+                <select value={pocRr} onChange={(e) => setPocRr(Number(e.target.value))} className={`${inputCls} mt-1 block`}>
+                  {[1, 1.5, 2, 2.5, 3, 4].map((r) => (
+                    <option key={r} value={r}>
+                      {r}R{r === DEFAULT_POC_RR_TARGET ? " (default)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-xs text-muted">Max pullback wait (candles)</span>
+                <input
+                  type="number"
+                  min={2}
+                  max={200}
+                  value={pocMaxWait}
+                  onChange={(e) => setPocMaxWait(Math.max(2, Math.round(Number(e.target.value) || DEFAULT_POC_MAX_PULLBACK_BARS)))}
+                  className={`${inputCls} mt-1 block`}
+                />
+              </label>
+              <div className="block text-xs">
+                <span className="text-muted">Confirmation filters</span>
+                <div className="mt-1 flex flex-wrap gap-3">
+                  <label className="flex items-center gap-1" title="The distribution close must clear the POC by an ATR margin, not squeak through">
+                    <input
+                      type="checkbox"
+                      checked={pocFilters.decisivePocBreak}
+                      onChange={(e) => setPocFilters({ ...pocFilters, decisivePocBreak: e.target.checked })}
+                    />
+                    Decisive POC break
+                  </label>
+                  <label className="flex items-center gap-1" title="The leg from the sweep extreme to the break close must span at least this many ATRs — screens out weak distributions">
+                    <input
+                      type="checkbox"
+                      checked={pocFilters.distributionLeg}
+                      onChange={(e) => setPocFilters({ ...pocFilters, distributionLeg: e.target.checked })}
+                    />
+                    Distribution leg ≥
+                    <input
+                      type="number"
+                      min={0.5}
+                      max={10}
+                      step={0.5}
+                      value={pocFilters.minDistLegAtr}
+                      onChange={(e) => setPocFilters({ ...pocFilters, minDistLegAtr: Math.max(0.5, Number(e.target.value) || DEFAULT_MIN_DIST_LEG_ATR) })}
+                      className="w-14 rounded border border-edge bg-transparent px-1 py-0.5"
+                    />
+                    ATR
+                  </label>
+                  <label className="flex items-center gap-1" title="The break candle's volume must be at least this multiple of the 20-bar average (skipped when the feed has no volume)">
+                    <input
+                      type="checkbox"
+                      checked={pocFilters.volumeSurge}
+                      onChange={(e) => setPocFilters({ ...pocFilters, volumeSurge: e.target.checked })}
+                    />
+                    Volume surge ≥
+                    <input
+                      type="number"
+                      min={1}
+                      max={10}
+                      step={0.1}
+                      value={pocFilters.volSurgeRatio}
+                      onChange={(e) => setPocFilters({ ...pocFilters, volSurgeRatio: Math.max(1, Number(e.target.value) || DEFAULT_POC_VOL_SURGE_RATIO) })}
+                      className="w-14 rounded border border-edge bg-transparent px-1 py-0.5"
+                    />
+                    × avg
+                  </label>
+                </div>
+              </div>
+              <label className="block">
+                <span className="text-xs text-muted">History: {pocBars} bars</span>
+                <input
+                  type="range"
+                  min={300}
+                  max={3000}
+                  step={100}
+                  value={pocBars}
+                  onChange={(e) => setPocBars(Number(e.target.value))}
+                  className="mt-2 block w-36"
+                />
+              </label>
+              <button
+                onClick={runPocAmd}
+                disabled={pocLoading}
+                className="rounded-md bg-accent px-3 py-1.5 text-xs font-semibold text-white hover:opacity-90 disabled:opacity-50"
+              >
+                {pocLoading ? "Running…" : "Run POC backtest"}
+              </button>
+            </div>
+            {pocError && <p className="mt-2 text-xs text-bear">{pocError}</p>}
+            {pocResult && (
+              <div className="mt-3 space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 lg:grid-cols-8">
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Boxes</p>
+                    <p className="font-semibold">{pocResult.boxes}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Breaks</p>
+                    <p className="font-semibold">{pocResult.breaks}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Filtered</p>
+                    <p className="font-semibold">{pocResult.filtered}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">No fill</p>
+                    <p className="font-semibold">{pocResult.noFill}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Win rate</p>
+                    <p className="font-semibold">{pocResult.trades.length > 0 ? `${pocResult.winRatePct}%` : "—"}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Total R</p>
+                    <p className={`font-semibold ${pocResult.totalR > 0 ? "text-bull" : pocResult.totalR < 0 ? "text-bear" : ""}`}>
+                      {pocResult.totalR >= 0 ? "+" : ""}
+                      {pocResult.totalR}R
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Avg R</p>
+                    <p className="font-semibold">{pocResult.trades.length > 0 ? `${pocResult.avgR}R` : "—"}</p>
+                  </div>
+                  <div className="rounded-md border border-edge p-2">
+                    <p className="text-muted">Max DD</p>
+                    <p className="font-semibold">{pocResult.maxDrawdownR}R</p>
+                  </div>
+                </div>
+                {pocResult.openAtEnd > 0 && (
+                  <p className="text-xs text-muted">{pocResult.openAtEnd} trade(s) still open at the end of the window (excluded from stats).</p>
+                )}
+                {pocResult.trades.length > 0 ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead className="text-muted">
+                        <tr>
+                          <th className="py-1 pr-3">Entry time</th>
+                          <th className="py-1 pr-3">Direction</th>
+                          <th className="py-1 pr-3">POC</th>
+                          <th className="py-1 pr-3">Sweep</th>
+                          <th className="py-1 pr-3">Entry</th>
+                          <th className="py-1 pr-3">SL</th>
+                          <th className="py-1 pr-3">TP ({pocResult.trades[0]?.rrTarget ?? pocRr}R)</th>
+                          <th className="py-1 pr-3">Exit</th>
+                          <th className="py-1 pr-3">Reason</th>
+                          <th className="py-1">R</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {pocResult.trades.map((t, i) => (
+                          <tr key={i} className="border-t border-edge">
+                            <td className="py-1 pr-3 whitespace-nowrap">{fmtTime(t.entryTime)}</td>
+                            <td className={`py-1 pr-3 font-semibold ${t.direction === "bullish" ? "text-bull" : "text-bear"}`}>
+                              {t.direction === "bullish" ? "SWEPT BELOW · LONG" : "SWEPT ABOVE · SHORT"}
+                            </td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.poc)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.sweepPrice)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.entry)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.stopLoss)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.takeProfit)}</td>
+                            <td className="py-1 pr-3 font-mono">{fmtPrice(t.exitPrice)}</td>
+                            <td className="py-1 pr-3 uppercase">{t.exitReason}</td>
+                            <td className={`py-1 font-mono ${t.rMultiple > 0 ? "text-bull" : t.rMultiple < 0 ? "text-bear" : ""}`}>
+                              {t.rMultiple >= 0 ? "+" : ""}
+                              {t.rMultiple.toFixed(2)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted">
+                    No trades — either no consolidation box produced a sweep + distribution close through the POC in this
+                    window, the confirmation filters rejected the breaks, or price never pulled back to the POC before
+                    running off or closing back through it.
                   </p>
                 )}
               </div>
